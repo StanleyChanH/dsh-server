@@ -167,9 +167,18 @@ fonts=$(docker compose exec -T dsh sh -c '
     || { echo "FAIL  fonts missing: fc-match finds neither Noto Sans CJK nor Noto Color Emoji (fonts-noto-* gone from the image; screenshots will show missing-glyph boxes)" >&2; exit 1; }
 
 echo "== 1. dsh start-up URL line =="
-docker compose logs --no-color dsh | grep -aq 'dsh web: https://' \
-    && echo "ok    logs dsh contain a 'dsh web:' URL line" \
-    || { echo "FAIL  logs dsh contain no 'dsh web:' URL line" >&2; exit 1; }
+# grep -c, not grep -q. `docker compose logs` streams its output, and a -q
+# grep exits at the first match; when that match comes early, the command is
+# usually still writing, its next write hits a closed pipe, and it dies of
+# SIGPIPE. Under pipefail that turns a line that was found into a failed
+# pipeline. -c reads to the end, so the command always finishes.
+n=$(docker compose logs --no-color dsh 2>/dev/null | grep -ac 'dsh web: https://' || true)
+if [ "${n:-0}" -ge 1 ]; then
+    echo "ok    logs dsh contain a 'dsh web:' URL line"
+else
+    echo "FAIL  logs dsh contain no 'dsh web:' URL line" >&2
+    exit 1
+fi
 
 echo "== 2. unauthenticated GET -> 302 to the login page (a browser only navigates on 3xx) =="
 out=$(curl -sk -o /dev/null -w '%{http_code} %{redirect_url}' "$BASE_URL/some/path")
