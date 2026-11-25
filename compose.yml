@@ -1,0 +1,167 @@
+# dsh-server stack: caddy (the only published ports, TLS from an internal CA)
+# -> auth-gate (login gate) + dsh (agent web UI). dsh and auth-gate publish no
+# ports and talk to each other only on the Compose network. Variables come from
+# .env (template: .env.example).
+#
+# DSH_TRUSTED_HOST is the single source of the site address: the Caddyfile reads
+# it through an environment placeholder, and dsh receives it as --trusted-host
+# (and, by default, as its public URL).
+#
+# A container keeps the environment it was created with, and `restart` does not
+# change that. So apply changes by recreating, never by restarting:
+#   after editing .env:                 `docker compose up -d`  (recreates caddy and dsh)
+#   after editing only the Caddyfile:   `docker compose up -d --no-deps --force-recreate caddy`
+#   after `git pull`:                   `docker compose build && docker compose up -d`
+# A caddy container created before DSH_TRUSTED_HOST existed cannot load the
+# current Caddyfile once it is restarted, and crash-loops. Details:
+# docs/operations.md, "Updating dsh-server".
+#
+# Image-source warning: if gcr.io is unreachable from the build host, pull
+# gcr.io/distroless/static:latest through a mirror you trust and `docker tag`
+# it locally, then build WITHOUT --pull (a build with --pull goes to gcr.io
+# directly and fails). Details: docs/operations.md.
+
+services:
+  dsh:
+    build:
+      context: ./dsh
+      args:
+        # dsh version to install, pinned in .env. Required: dsh is a developer
+        # preview, so there is no "latest" worth floating on. dsh/Dockerfile
+        # declares an ARG of the same name; `docker compose build dsh` picks
+        # up a change.
+        DSH_VERSION: ${DSH_VERSION:?DSH_VERSION is not set in .env (pin the dsh version to install, e.g. 0.2.2-rc.5)}
+        # Outbound proxy for the RUN steps. BuildKit predefines these args, so
+        # the Dockerfile does not declare them; the docker CLI does not forward
+        # the shell's proxy variables, so they are passed explicitly. An empty
+        # LAN_PROXY disables all of them.
+        HTTP_PROXY: ${LAN_PROXY:-}
+        HTTPS_PROXY: ${LAN_PROXY:-}
+        http_proxy: ${LAN_PROXY:-}
+        https_proxy: ${LAN_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+        no_proxy: ${NO_PROXY:-localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+    image: dsh-server-dsh:latest
+    # Never add `command:` to this service. The image's ENTRYPOINT starts
+    # `dsh web` only when it is started without arguments; anything given in
+    # `command:` takes the pass-through branch and silently replaces the
+    # service with a different process.
+    restart: unless-stopped
+    environment:
+      # The URL dsh advertises and the authority the browser shows. Both derive
+      # from DSH_TRUSTED_HOST; set DSH_PUBLIC_URL only to override the first.
+      DSH_PUBLIC_URL: "${DSH_PUBLIC_URL:-https://${DSH_TRUSTED_HOST}/}"
+      DSH_TRUSTED_HOST: "${DSH_TRUSTED_HOST:?DSH_TRUSTED_HOST is not set in .env (the IP or hostname members use to reach this server, no scheme or port)}"
+      # Outbound traffic started inside dsh sessions (git clone, curl in child
+      # processes, ...) goes through the LAN proxy for speed; NO_PROXY keeps
+      # private ranges direct. Cost: while the proxy is unreachable those
+      # fetches fail (there is no fallback to a direct connection). Node's own
+      # fetch ignores proxy variables, so dsh's own API traffic is unaffected.
+      #
+      # Upper- and lowercase are both set: curl only honours the lowercase
+      # http_proxy for http:// URLs (it ignores the uppercase one), accepts
+      # either for https, and npm, apt and git each prefer a different one.
+      HTTP_PROXY: ${LAN_PROXY:-}
+      HTTPS_PROXY: ${LAN_PROXY:-}
+      http_proxy: ${LAN_PROXY:-}
+      https_proxy: ${LAN_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      no_proxy: ${NO_PROXY:-localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+    volumes:
+      - ./dsh-home:/data/dsh
+      - ./workspace:/workspace
+      # The whole of /root is mounted out: the runtime state of the container's
+      # home (npm cache, symlinks to gh credentials and workspaces, .config,
+      # ...) survives rebuilds, so no restore script has to replay it (the
+      # lesson of 2026-11-23: rootfs state evaporated on every rebuild before).
+      # Side effect: new files that an image update puts in /root (a changed
+      # .bashrc, say) do not appear, because the mount shadows them.
+      - ./dsh-root:/root
+    healthcheck:
+      # The probe targets the container's own IP, which has to be resolved at
+      # run time (hostname -i may list several addresses; keep the first).
+      #
+      # No -f, on purpose: dsh answers 401 to an unauthenticated request for /
+      # (no token, no cookie), and `curl -f` treats 401 as failure, so the
+      # container would never become healthy. Liveness here means "one HTTP
+      # answer from the port" (401 or 404 both count); only a refused
+      # connection or a timeout fails.
+      #
+      # --noproxy '*': the container has HTTP(S)_PROXY set, but the target is
+      # a private address that must never be hijacked by the proxy (the
+      # no_proxy list is a soft constraint; this is the hard stop in case of a
+      # misconfiguration).
+      test: ["CMD-SHELL", "curl -s --noproxy '*' -o /dev/null --max-time 5 \"http://$(hostname -i | awk '{print $1}'):3080/\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  auth-gate:
+    build:
+      context: ./auth-gate
+      args:
+        # Go module proxy for the build stage. The default is a mirror that is
+        # fast from mainland China; set GOPROXY=https://proxy.golang.org,direct
+        # elsewhere.
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    image: dsh-server-auth-gate:latest
+    # Runs as the administrator account of the host (uid/gid 1000 here): the
+    # process writes users.json, so aligning the owner with the host account
+    # lets the administrator edit the user table from the host without sudo
+    # (see "Remove a member" in docs/operations.md). If the administrator of
+    # your host has another uid, change this value and the owner of the token
+    # file together, or auth-gate cannot read it: owner_uid and owner_gid in
+    # scripts/sync-token.sh, and the two 1000 in scripts/smoke.sh.
+    user: "1000:1000"
+    restart: unless-stopped
+    environment:
+      # Required: auth-gate refuses to start without it (fail fast), and the
+      # message names the fix.
+      AUTH_GATE_SECRET: "${AUTH_GATE_SECRET:?AUTH_GATE_SECRET is not set: copy .env.example to .env and fill in the output of openssl rand -hex 32}"
+      AUTH_SESSION_HOURS: "${AUTH_SESSION_HOURS:-720}"
+    volumes:
+      - ./auth-gate/data:/data
+    healthcheck:
+      # distroless has no shell, so this has to be the exec (array) form.
+      test: ["CMD", "/gate", "-ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80" # HTTP -> HTTPS redirect only
+      - "443:443" # the site itself
+    environment:
+      # Feeds the {$DSH_TRUSTED_HOST} placeholders in the Caddyfile (site
+      # address and default_sni). To change the value, edit .env and recreate
+      # this container; a plain restart keeps the old one.
+      DSH_TRUSTED_HOST: "${DSH_TRUSTED_HOST:?DSH_TRUSTED_HOST is not set in .env (the IP or hostname members use to reach this server, no scheme or port)}"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/data:/data # internal CA and certificates (root.crt is handed out from here)
+      - ./caddy/config:/config
+    depends_on:
+      dsh:
+        condition: service_healthy
+      auth-gate:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

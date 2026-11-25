@@ -1,0 +1,23 @@
+name: Question
+description: Ask how something works, or how to reach your goal with dsh-server.
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste tokens, session cookies, passwords or `.env` contents.** The start-up URL that dsh prints contains the dsh token.
+
+        For a security problem, read [SECURITY.md](https://github.com/StanleyChanH/dsh-server/blob/master/SECURITY.md) instead of opening an issue. For a bug in the dsh agent itself, ask in its [upstream repository](https://github.com/deepseek-ai/deepseek-harness).
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What are you trying to do, and where are you stuck?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What you already read or tried, and anything special about your setup (VPN, proxy, a different administrator uid, ...).
+      render: shell

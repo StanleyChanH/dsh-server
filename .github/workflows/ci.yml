@@ -1,0 +1,52 @@
+# Checks for every push and pull request.
+#
+# Each matrix entry runs one group of scripts/check.sh, so CI runs exactly what
+# a contributor runs locally (see CONTRIBUTING.md). The dsh image is built by a
+# separate workflow because it is large.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [go, shell, dockerfile, config, build]
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Run
+        run: scripts/check.sh "${{ matrix.check }}"
+
+  race:
+    name: go test -race
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
+        with:
+          go-version-file: auth-gate/go.mod
+          cache-dependency-path: auth-gate/go.sum
+      - name: Test
+        run: go test -race -count=1 ./...
+        working-directory: auth-gate

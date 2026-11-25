@@ -1,0 +1,8 @@
+# Text files are stored and checked out with LF line endings, so shell scripts
+# work on any operating system and diffs never show line-ending noise.
+* text=auto eol=lf
+
+# Files that are executed in, or mounted into, a Linux container.
+*.sh text eol=lf
+Dockerfile text eol=lf
+Caddyfile text eol=lf

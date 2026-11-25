@@ -1,0 +1,5 @@
+# Runtime state (bcrypt hashes in users.json, the synced dsh token) lives in
+# data/ and is bind-mounted at run time. It must never be part of the build
+# context.
+data/
+*_test.go

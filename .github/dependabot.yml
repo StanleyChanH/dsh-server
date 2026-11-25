@@ -1,0 +1,14 @@
+# Dependabot keeps the Go dependency of auth-gate and the pinned GitHub
+# Actions current. It opens pull requests; CI has to be green before one is
+# merged. Base-image tags in the Dockerfiles are bumped by hand: they need a
+# rebuild and a smoke test (see CONTRIBUTING.md, "Version pins").
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /auth-gate
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

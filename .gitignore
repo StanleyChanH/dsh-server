@@ -1,0 +1,28 @@
+# Deployment secrets and runtime state (each directory keeps a tracked .gitkeep).
+.env
+dsh-home/*
+!dsh-home/.gitkeep
+dsh-root/*
+!dsh-root/.gitkeep
+workspace/*
+!workspace/.gitkeep
+caddy/data/*
+!caddy/data/.gitkeep
+caddy/config/*
+!caddy/config/.gitkeep
+auth-gate/data/*
+!auth-gate/data/.gitkeep
+
+# Root certificate exported by the quick start.
+dsh-server-root.crt
+
+# Backups and other archives made while working on the stack.
+*.tar.gz
+
+# Local git worktrees (feature branches checked out for isolated work).
+.worktrees/
+
+# Editors and operating systems.
+.idea/
+.vscode/
+.DS_Store

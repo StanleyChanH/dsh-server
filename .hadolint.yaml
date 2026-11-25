@@ -1,0 +1,7 @@
+# hadolint configuration, shared by CI and local runs:
+#   docker run --rm -i -v "$PWD/.hadolint.yaml:/.hadolint.yaml:ro" hadolint/hadolint < dsh/Dockerfile
+ignored:
+  # "Pin versions in apt get install". Not practical here: the base images are
+  # pinned, the packages come from the matching Debian release, and pinning
+  # would mean maintaining a version list for every rebuild.
+  - DL3008

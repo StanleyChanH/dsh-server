@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest an improvement or a new capability.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem you are trying to solve
+      description: What you want to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+      description: The behaviour you have in mind. If you considered more than one way, mention it.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have tried
+      description: Workarounds, or other tools, and why they fall short.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This fits the project's goal, a private-network dsh for one team, and is not a request to expose the stack to the public Internet.
+          required: true
+        - label: I am willing to help implement it.
+          required: false

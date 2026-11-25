@@ -1,0 +1,69 @@
+# Public entry point of the dsh-server stack: HTTPS on 443, plus the 80 -> 443
+# redirect that Caddy adds on its own. Reachable on a private network only.
+#
+# The site address is an environment placeholder, so the whole stack takes its
+# host from one place: DSH_TRUSTED_HOST in .env (compose.yml passes it into
+# this container). The value must be an IP address or hostname, without scheme
+# or port: the stack always serves 443.
+#
+# TLS comes from Caddy's internal CA, so this works on a bare IP without a
+# domain. The root certificate is written to
+# caddy/data/caddy/pki/authorities/local/root.crt on the host; hand it to
+# members to import.
+
+# admin off: this deployment never changes its configuration at run time, so
+# the admin API would only be one more local listener.
+#
+# default_sni: a browser or curl talking to a bare IP sends no SNI (RFC 6066
+# forbids IP literals there), and without an SNI Caddy cannot choose a
+# certificate: the handshake fails with "alert internal error" (curl reports
+# 000 / exit 35). Pinning the default SNI to the site host makes the single
+# internal certificate match even for a ClientHello without SNI.
+{
+	admin off
+	default_sni {$DSH_TRUSTED_HOST}
+}
+
+https://{$DSH_TRUSTED_HOST} {
+	tls internal
+
+	# No `encode` anywhere, on purpose: dsh answers with SSE and WebSocket
+	# streams, and compressing them buffers the stream and breaks real-time
+	# delivery. Caddy does not enable encoding by default; this note is here so
+	# that nobody adds it.
+
+	# Login-gate endpoints go straight to auth-gate. Its handlers already live
+	# at /auth/login, /auth/check and /auth/ping, so no prefix is stripped.
+	handle /auth/* {
+		reverse_proxy auth-gate:8080
+	}
+
+	# Everything else passes auth-gate's forward_auth check first. A GET
+	# without a valid session is answered with 302 + Location to the login page
+	# (a browser only navigates on 3xx); any other method gets 401. Caddy
+	# forwards that answer to the browser unchanged and only talks to dsh once
+	# the gate has said 200.
+	handle {
+		forward_auth auth-gate:8080 {
+			uri /auth/check
+		}
+		# Automatic sign-in: dsh answers 401 to every request that carries no
+		# valid token or cookie (and a browser does not navigate on 401), so the
+		# 401 is rewritten here into a 302 to /auth/dsh-entry. auth-gate hands
+		# out the current token and sends the member back to /?token=<current>.
+		# This applies to every 401 dsh produces (a deliberate choice: it
+		# matches browser semantics). The token is synced once a minute by a
+		# host cron job running scripts/sync-token.sh. Responses that are not
+		# 401 pass through untouched, including SSE and WebSocket.
+		reverse_proxy dsh:3080 {
+			@dsh_unauth status 401
+			handle_response @dsh_unauth {
+				# A `redir` whose first argument starts with "/" is parsed as a
+				# path matcher; attached to the original request path "/" it
+				# never matches and turns into an empty 200. The explicit "*"
+				# means "redirect unconditionally".
+				redir * /auth/dsh-entry 302
+			}
+		}
+	}
+}
