@@ -313,8 +313,8 @@ It requires a Cloudflare account and a domain whose DNS is hosted there.
    mail addresses, or a group from your identity provider.
 4. **Enable it in `.env`.** Copy the three lines of the *Cloudflare Tunnel* block from
    `.env.example` into `.env`, uncommented and filled in: `COMPOSE_FILE`, `TUNNEL_TOKEN`
-   (the token from step 1) and `TUNNEL_HOSTNAME` (the public hostname from step 2, without
-   scheme or path).
+   (the token from step 1) and `TUNNEL_HOSTNAME` (the public hostname from step 2: only
+   the host name, without scheme or path).
 5. **Apply it**, in the deployment directory:
 
    ```sh
@@ -335,6 +335,12 @@ It requires a Cloudflare account and a domain whose DNS is hosted there.
    login rate limit counts on each entrance, and that the public hostname answers behind
    Cloudflare Access.
 
+This stack knows one public hostname, the one in `TUNNEL_HOSTNAME`. caddy's tunnel
+listener answers any hostname that Cloudflare routes to it, so every additional hostname
+you point at this tunnel needs an Access application of its own. Without one, that
+hostname leads straight to the login page from the Internet (dsh still refuses its API
+calls).
+
 ### Turn it off
 
 Remove the `COMPOSE_FILE` line from `.env` (and, if you like, the two variables), then:
@@ -350,11 +356,18 @@ afterwards.
 
 ### What to know
 
-- **Run `docker compose` in the deployment directory.** `COMPOSE_FILE` holds relative
-  paths, which Compose resolves against the directory the command is run from, and it is
-  not read at all when `--env-file` is given. Such a command addresses the base stack
-  only.
+- **Run `docker compose` in the deployment directory, without `--env-file`.**
+  `COMPOSE_FILE` holds relative paths, which Compose resolves against the directory the
+  command is run from, and it is not read at all when `--env-file` is given. Such a
+  command addresses the base stack only. That is harmless for `config`, `ps` and `logs`,
+  but an `up -d` run that way recreates caddy and dsh without the tunnel (which restarts
+  dsh) while `cloudflared` keeps running: the public entrance is down until `docker
+  compose up -d` is run in the deployment directory. The smoke test says so in section
+  11.
 - `docker compose config` prints `TUNNEL_TOKEN`; do not paste its output anywhere.
+- `TUNNEL_HOSTNAME` is the bare host name, optionally with a port. The entrypoint leaves
+  out anything else, because dsh refuses to start on it, and caddy waits for dsh: the
+  typo would take the private entrance down as well. The smoke test names such a value.
 - After changing `TUNNEL_HOSTNAME`, run `docker compose up -d`. dsh keeps the environment
   it was created with, and the smoke test says so when it was not recreated.
 - After a cloudflared version bump, `docker compose up -d cloudflared`, then the smoke
@@ -479,6 +492,7 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate runs as t
 | The public hostname shows the dsh-server login page, with no Cloudflare Access login before it | Nothing but the login gate is in front of the public hostname, so the login page is on the Internet. Add the Access application ("Cloudflare Tunnel", step 3) now; `scripts/smoke.sh` fails in section 11 until it is there |
 | Everyone through the tunnel is rate-limited together (`尝试过多`) | Cloudflare does not send `Cf-Connecting-Ip`, or rewrites it, so all tunnel visitors share one bucket: five wrong passwords per minute in total. Check the zone's Managed Transforms and its Pseudo IPv4 setting ("Cloudflare Tunnel", what to know) |
 | `smoke.sh` fails in section 11: `dsh was created with TUNNEL_HOSTNAME "..."` | `.env` was changed after dsh was created. A container keeps the environment it was created with: `docker compose up -d` recreates dsh |
+| `smoke.sh` fails in section 11: `dsh was not started with TUNNEL_HOSTNAME "..."` | Either `.env` carries more than the host name in `TUNNEL_HOSTNAME` (a scheme, a path): the entrypoint left it out, and `docker compose logs dsh` says so. Put only the host name there and run `docker compose up -d`. Or the dsh image is older than the tunnel option and its entrypoint does not know the variable: `docker compose build dsh && docker compose up -d` |
 | A member forgot their password | `scripts/add-user.sh <name>` resets it |
 | The build fails with a mention of gcr.io | `--pull` was used, or the new machine has not had its image sources prepared; see "Before you build: image sources" |
 
@@ -499,6 +513,16 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate runs as t
   forwarded to it. With the tunnel, the public hostname is part of the attack surface:
   Cloudflare Access and the login gate are in front of it, and Access has to stay there
   (`scripts/smoke.sh` fails when it is missing).
+- With the Cloudflare Tunnel, Cloudflare is in the path of everything members send and
+  receive. It terminates TLS for the public hostname, so the dsh token URL of automatic
+  sign-in, both session cookies, prompts and outputs pass through Cloudflare unencrypted
+  on its side, and may end up in its logs. That is the price of the public entrance;
+  without the tunnel nothing leaves the private network.
+- With the tunnel, caddy's tunnel listener answers every hostname that Cloudflare routes
+  to it. `TUNNEL_HOSTNAME` is the one this stack knows and checks; any other hostname
+  leads to the login page from the Internet unless it has an Access application of its
+  own (dsh still refuses its API calls). Do not point a hostname at this tunnel without
+  Access.
 - **Ports published by Docker go through the FORWARD/DOCKER chains and bypass ufw
   rules.** If ufw is enabled to tighten things up, explicit `DOCKER-USER` chain rules are
   required; `ufw deny 443` alone does not stop this stack.

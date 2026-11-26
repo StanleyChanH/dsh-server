@@ -256,7 +256,7 @@ caddy，所以 Cloudflare 面板里地址配错了也绕不过登录门。
    *Allow* 的策略，写明谁可以用：邮箱地址，或身份提供方里的组。
 4. **在 `.env` 里启用。** 把 `.env.example` 中 *Cloudflare Tunnel* 那一段的三行抄进
    `.env`，去掉注释并填好：`COMPOSE_FILE`、`TUNNEL_TOKEN`（第 1 步的 token）、
-   `TUNNEL_HOSTNAME`（第 2 步的公网主机名，不带协议和路径）。
+   `TUNNEL_HOSTNAME`（第 2 步的公网主机名：只填主机名，不带协议和路径）。
 5. **生效**，在部署目录里：
 
    ```sh
@@ -275,6 +275,11 @@ caddy，所以 Cloudflare 面板里地址配错了也绕不过登录门。
    §11 检查隧道：dsh 是否认这个公网主机名、两个入口上登录限流各按哪个地址计数、
    公网主机名是否在 Cloudflare Access 后面应答。
 
+这套栈只认一个公网主机名，就是 `TUNNEL_HOSTNAME` 里的那个。caddy 的隧道监听器会
+应答 Cloudflare 路由过来的任何主机名，所以你指向这条隧道的每一个额外主机名都需要
+自己的 Access 应用。没有的话，那个主机名从互联网上直达登录页（dsh 仍然拒绝它的
+API 调用）。
+
 ### 关闭
 
 删掉 `.env` 里的 `COMPOSE_FILE` 那一行（那两个变量想删也可以），然后：
@@ -289,10 +294,15 @@ Cloudflare 面板里删掉那个公网主机名，或者整条隧道。
 
 ### 需要知道的
 
-- **在部署目录里运行 `docker compose`。** `COMPOSE_FILE` 里是相对路径，compose 按
-  命令所在的目录解析；而且带了 `--env-file` 时它根本不会被读。这样的命令只作用于
-  基础栈。
+- **在部署目录里运行 `docker compose`，不要带 `--env-file`。** `COMPOSE_FILE` 里是
+  相对路径，compose 按命令所在的目录解析；而且带了 `--env-file` 时它根本不会被读。
+  这样的命令只作用于基础栈。对 `config`、`ps`、`logs` 无害，但这样跑 `up -d` 会把
+  caddy 和 dsh 重建成不带隧道（dsh 会重启），而 `cloudflared` 还在运行：在部署目录
+  里重新 `docker compose up -d` 之前，公网入口是断的。冒烟测试会在 §11 指出来。
 - `docker compose config` 会打印 `TUNNEL_TOKEN`，别把它的输出贴到任何地方。
+- `TUNNEL_HOSTNAME` 只填主机名，可以带端口。别的写法 entrypoint 不会传给 dsh：dsh
+  遇到这种值会拒绝启动，而 caddy 要等 dsh，一个笔误会让私有入口也跟着挂。冒烟
+  测试会点名这样的值。
 - 改了 `TUNNEL_HOSTNAME` 之后要 `docker compose up -d`。容器沿用创建时的环境变量，
   没重建的话冒烟测试会指出来。
 - 升级 cloudflared 版本后：`docker compose up -d cloudflared`，然后跑冒烟测试。
@@ -400,6 +410,7 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate 以管理
 | 公网主机名直接显示 dsh-server 的登录页，之前没有 Cloudflare Access 的登录 | 公网主机名前面只有登录门，等于登录页挂在了互联网上。立刻补上 Access 应用（「Cloudflare Tunnel」第 3 步）；补上之前 `scripts/smoke.sh` 的 §11 会失败 |
 | 走隧道的所有人被一起限流（`尝试过多`） | Cloudflare 没有发 `Cf-Connecting-Ip`，或者改写了它，于是所有隧道访客共用一个桶：每分钟一共 5 次错误密码。检查该域名的 Managed Transforms 和 Pseudo IPv4 设置（「Cloudflare Tunnel」之「需要知道的」） |
 | `smoke.sh` 的 §11 失败：`dsh was created with TUNNEL_HOSTNAME "..."` | `.env` 在 dsh 创建之后改过。容器沿用创建时的环境变量：`docker compose up -d` 会重建 dsh |
+| `smoke.sh` 的 §11 失败：`dsh was not started with TUNNEL_HOSTNAME "..."` | 两种情况之一：`.env` 的 `TUNNEL_HOSTNAME` 里不止主机名（带了协议或路径），entrypoint 没把它传给 dsh，`docker compose logs dsh` 里有说明——改成只填主机名，然后 `docker compose up -d`；或者 dsh 镜像比隧道这个选项还旧、它的 entrypoint 不认识这个变量——`docker compose build dsh && docker compose up -d` |
 | 忘了某成员密码 | `scripts/add-user.sh <名字>` 重设即 |
 | 构建失败提到 gcr.io | 误用了 `--pull`，或新机器没做镜像源预处理，见「构建前必读：镜像来源」 |
 
@@ -415,6 +426,14 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate 以管理
 - 访问面 = 私有网络 + 登录门。不开 Cloudflare Tunnel 时它不暴露在公网，也别把 443
   转发到公网。开了隧道后，公网主机名属于访问面：前面是 Cloudflare Access 和登录
   门，而且 Access 必须一直在（缺了它 `scripts/smoke.sh` 会失败）。
+- 开了 Cloudflare Tunnel，成员收发的一切都经过 Cloudflare。公网主机名的 TLS 由它
+  终结，所以自动换乘的 dsh token URL、两枚会话 cookie、提示词和输出在它那一侧是
+  明文，可能进入它的日志。这是公网入口的代价；不开隧道时没有任何东西离开私有
+  网络。
+- 开了隧道，caddy 的隧道监听器会应答 Cloudflare 路由过来的每一个主机名。
+  `TUNNEL_HOSTNAME` 是这套栈认识并检查的那一个；其他任何主机名，除非有自己的
+  Access 应用，否则从互联网上直达登录页（dsh 仍然拒绝它的 API 调用）。不要在没有
+  Access 的情况下把主机名指向这条隧道。
 - **Docker 发布端口走 FORWARD/DOCKER 链，绕过 ufw 规则**：若启用 ufw 想收紧，
   必须显式写 `DOCKER-USER` 链规则，光 `ufw deny 443` 拦不住这套栈。
 

@@ -75,9 +75,11 @@ services:
   dsh:
     environment:
       # Required. The public hostname of the tunnel, for example
-      # dsh.example.org: no scheme and no path. dsh accepts it as a second
-      # authority next to DSH_TRUSTED_HOST; without it the pages would load
-      # but every API call from the public hostname would be refused.
+      # dsh.example.org: only the host name, no scheme and no path. dsh
+      # accepts it as a second authority next to DSH_TRUSTED_HOST; without it
+      # the pages would load but every API call from the public hostname
+      # would be refused. The entrypoint leaves out any other kind of value,
+      # because dsh refuses to start on it, and says so in its log.
       TUNNEL_HOSTNAME: "${TUNNEL_HOSTNAME:?TUNNEL_HOSTNAME is not set in .env (the public hostname of the Cloudflare Tunnel, for example dsh.example.org; see docs/operations.md, Cloudflare Tunnel)}"
 
 networks:

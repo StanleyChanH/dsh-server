@@ -1,6 +1,6 @@
 # dsh 团队常驻服务器 — 部署设计
 
-日期：2026-11-21（增量：2026-11-22 自动换乘、2026-11-23 /root 持久化、2026-11-24 依赖烘进镜像）
+日期：2026-11-21（增量：2026-11-22 自动换乘、2026-11-23 /root 持久化、2026-11-24 依赖烘进镜像、2026-11-26 经 Cloudflare Tunnel 的公网入口）
 状态：已实施
 
 > 英文版：[design.md](design.md)。运维手册：[operations.zh-CN.md](operations.zh-CN.md)。
@@ -20,7 +20,8 @@
 
 ## 非目标
 
-- 不做公网暴露（只走 tailnet/局域网）
+- 不做端口转发式的公网暴露。可选的 Cloudflare Tunnel（`compose.tunnel.yml`，
+  2026-11-26）是唯一的公网入口，前面是 Cloudflare Access
 - 不做多租户/按用户权限（dsh 当前是单 token + cookie 模型，登录门 auth-gate 按人发密码弥补）
 - 不从源码构建 dsh（用官方 npm 包）
 
@@ -247,10 +248,16 @@ Noto Sans CJK SC / Noto Sans Mono CJK SC / Liberation Sans / Noto Color Emoji；
    就带着它的话，Cloudflare 是把访客地址**追加**在后面，首段是访客自己填的。
 5. **公网主机名是 dsh 的第二个受信主机**：变量有值时，entrypoint 追加
    `--trusted-host "$TUNNEL_HOSTNAME"`。dsh 的来源校验会拒绝 `Host` 没被告知过的 API
-   请求，而经隧道进来的 `Host` 就是公网主机名。
+   请求，而经隧道进来的 `Host` 就是公网主机名。不是裸主机名（或 host:port）的值，
+   entrypoint 不传，并在 stderr 上说明：dsh 遇到别的写法会拒绝启动，而 caddy 要等
+   健康的 dsh，一个笔误会让私有入口也跟着挂。冒烟测试读 dsh 的命令行，把这种情况和
+   「容器没重建」「镜像早于这次改动」区分开。
 6. **Cloudflare Access 在面板里配置；栈本身不校验 Access 的 JWT。** 登录门和 dsh
    自己的会话在它后面照常生效。冒烟测试从宿主机访问公网主机名，应答不是 Access 的
-   跳转就失败。
+   跳转就失败。隧道本身带来两件事。公网主机名的 TLS 由 Cloudflare 终结，成员收发的
+   一切都经过它，包括 dsh token URL 和会话 cookie。隧道监听器应答任何 `Host`：栈只认
+   一个公网主机名，路由到这条隧道的其他主机名除非有自己的 Access 应用，否则直达
+   登录页。
 7. **smoke §11** 检查启用之后可能出错的各个环节：dsh 是带着当前的 `TUNNEL_HOSTNAME`
    创建的并且认它（经隧道监听器取得会话、WebSocket 升级被接受）、限流在两个监听器
    上各按正确的地址计数、Access 挡在首页和登录端点两个路径前面。
@@ -276,11 +283,13 @@ Noto Sans CJK SC / Noto Sans Mono CJK SC / Liberation Sans / Noto Color Emoji；
 **验证**：`scripts/check.sh` 用 auth-gate 与 dsh 的替身运行 Caddyfile，断言两个监听
 器各自交给后端什么（两边都带伪造的头）；Caddyfile 的六种改坏方式都被报出。compose
 检查断言拓扑和两个必填变量；覆盖文件的六种改坏方式都被报出。entrypoint 的参数列表
-在 dsh 镜像的基础镜像里检查，包括 `TUNNEL_HOSTNAME` 为空的情况。单元测试钉住「空的
-`X-Forwarded-For` 回退到对端地址」。在一个沙箱栈上（dsh 由当前代码树构建，不发布端口，
-独立的项目名和镜像 tag）：隧道关闭时，未改动的冒烟测试通过；换上 cloudflared 与
-Access 的替身后 §0–§11 通过，并且每项新检查都见过因各自的原因失败，其中包括 dsh
-运行旧的 entrypoint、以及 Caddyfile 计数了伪造的地址。没有涉及任何运行中的部署。
+在 dsh 镜像的基础镜像里检查，包括 `TUNNEL_HOSTNAME` 为空、以及不是裸主机名的值。
+单元测试钉住「空的 `X-Forwarded-For` 回退到对端地址」。在一个沙箱栈上（dsh 由当前
+代码树构建，不发布端口，独立的项目名和镜像 tag）：隧道关闭时，未改动的冒烟测试
+通过；换上 cloudflared 与 Access 的替身后 §0–§11 通过，并且每项新检查都见过因各自
+的原因失败，其中包括 dsh 运行旧的 entrypoint、以及 Caddyfile 计数了伪造的地址。
+entrypoint 把带协议的网址原样传给 dsh 时，dsh 崩溃循环、重建的 caddy 起不来；按提交
+的 entrypoint，dsh 正常运行，私有入口照常应答。没有涉及任何运行中的部署。
 **写作时尚未了结**：Cloudflare Access 对冒烟测试请求的应答是用替身比对的。第一次
 对着真实隧道运行，才能确定 `302` 这个模式对不对，以及运维手册里引用的面板文案是否
 仍然适用。

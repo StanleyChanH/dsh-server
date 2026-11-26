@@ -1,7 +1,8 @@
 # dsh-server design
 
 Date: 2026-11-21 (increments: 2026-11-22 automatic sign-in, 2026-11-23 `/root`
-persistence, 2026-11-24 dependencies baked into the image)
+persistence, 2026-11-24 dependencies baked into the image, 2026-11-26 public access
+through a Cloudflare Tunnel)
 Status: implemented
 
 > Chinese version: [design.zh-CN.md](design.zh-CN.md). Runbook: [operations.md](operations.md).
@@ -24,7 +25,8 @@ through a browser (session history, plugins and configuration all persist).
 
 ## Non-goals
 
-- No exposure to the public Internet (private network only)
+- No port forwarded to the public Internet. The optional Cloudflare Tunnel
+  (`compose.tunnel.yml`, 2026-11-26) is the one public entrance, behind Cloudflare Access
 - No multi-tenancy or per-user permissions (dsh currently has a single token plus a
   cookie; the login gate, auth-gate, adds a password per person on top)
 - dsh is not built from source (the official npm package is used)
@@ -317,10 +319,19 @@ server", the gate "which member is this", and dsh has its own session on top. Pl
 5. **The public hostname is a second authority for dsh**: the entrypoint adds
    `--trusted-host "$TUNNEL_HOSTNAME"` when the variable is set. dsh's fence refuses API
    requests whose `Host` it was not told about, and through the tunnel the `Host` is the
-   public hostname.
+   public hostname. The entrypoint leaves out a value that is not a bare host name, or
+   host:port, and says so on stderr: dsh refuses to start on anything else, and caddy
+   waits for a healthy dsh, so the typo would take the private entrance down as well. The
+   smoke test reads dsh's command line to tell that from a stale container and from an
+   image built before this change.
 6. **Cloudflare Access is configured in the dashboard; the stack does not check the Access
    JWT.** The gate and dsh's own session apply behind it. The smoke test fetches the
    public hostname from the host and fails when the answer is not the redirect of Access.
+   Two things follow from the tunnel itself. Cloudflare terminates TLS for the public
+   hostname and is in the path of everything members send and receive, the dsh token URL
+   and the session cookies included. And the tunnel listener answers any `Host`: the
+   stack knows one public hostname, and any other hostname routed to the tunnel reaches
+   the login page unless it has an Access application of its own.
 7. **Smoke section 11** checks what a deployment can get wrong after enabling it: dsh was
    created with the current `TUNNEL_HOSTNAME` and serves it (a session is obtained through
    the tunnel listener, and a WebSocket upgrade is accepted), the rate limit counts the
@@ -351,12 +362,15 @@ dsh and asserts what each listener hands the backends, with forged headers on bo
 mutations of the Caddyfile are each reported. The Compose checks assert the topology and
 the two required variables; six mutations of the override are each reported. The
 entrypoint's argument list is checked in the base image of the dsh image, also for an empty
-`TUNNEL_HOSTNAME`. A unit test pins that an empty `X-Forwarded-For` falls back to the
-peer. On a sandbox stack with a real dsh built from the tree (no published ports, a
-project and image tags of its own), the unchanged smoke test passed with the tunnel off;
+`TUNNEL_HOSTNAME` and for values that are not bare host names. A unit test pins that an
+empty `X-Forwarded-For` falls back to the peer. On a sandbox stack with a real dsh built
+from the tree (no published ports, a project and image tags of its own), the unchanged
+smoke test passed with the tunnel off;
 with stand-ins for cloudflared and Access, sections 0 to 11 passed, and each new check was
 also seen failing for its own reason, among them dsh running the previous entrypoint and a
-Caddyfile that counts a forged address. No running deployment was involved. **Open at the
+Caddyfile that counts a forged address. With the entrypoint passing a pasted URL on, dsh
+crash-looped and a recreated caddy never started; with the entrypoint as committed, dsh
+runs and the private entrance answers. No running deployment was involved. **Open at the
 time of writing**: the answer of Cloudflare Access to the smoke test's request was matched
 against a stand-in. The first run against a real tunnel decides whether the `302` pattern
 is the right one, and whether the dashboard labels quoted in the runbook still apply.
