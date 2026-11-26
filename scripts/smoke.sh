@@ -356,14 +356,23 @@ if [ "$tunnel" = 1 ]; then
     tunnel_host=$(docker compose config --format json 2>/dev/null | jq -r '.services.dsh.environment.TUNNEL_HOSTNAME // ""')
     [ -n "$tunnel_host" ] || { echo "FAIL  TUNNEL_HOSTNAME is not set, although compose.tunnel.yml is active" >&2; exit 1; }
 
-    # A container keeps the environment it was created with: dsh was told the
-    # public hostname when it was created, not when .env was edited.
-    got=$(docker compose exec -T dsh printenv TUNNEL_HOSTNAME 2>/dev/null || true)
-    if [ "$got" != "$tunnel_host" ]; then
-        echo "FAIL  dsh was created with TUNNEL_HOSTNAME \"$got\", not \"$tunnel_host\": a container keeps the environment it was created with. Run \`docker compose up -d\` to recreate it" >&2
+    # A container keeps the environment it was created with, and the
+    # entrypoint passes TUNNEL_HOSTNAME on to dsh only when it is a bare host
+    # name. What counts is that dsh was started with it, so its command line
+    # is read, not its environment: that tells a stale container from a value
+    # the entrypoint left out, and from an image whose entrypoint is older
+    # than this option.
+    told=$(docker compose exec -T dsh sh -c 'tr "\0" "\n" < /proc/1/cmdline' 2>/dev/null | awk '$1 == "--trusted-host" {getline; print}' || true)
+    if [ -z "$told" ] || [ "$(printf '%s\n' "$told" | grep -cxF -- "$tunnel_host" || true)" -lt 1 ]; then
+        got=$(docker compose exec -T dsh printenv TUNNEL_HOSTNAME 2>/dev/null || true)
+        if [ "$got" != "$tunnel_host" ]; then
+            echo "FAIL  dsh was created with TUNNEL_HOSTNAME \"$got\", not \"$tunnel_host\": a container keeps the environment it was created with. Run \`docker compose up -d\` to recreate it" >&2
+        else
+            echo "FAIL  dsh was not started with TUNNEL_HOSTNAME \"$tunnel_host\", although its container has it. Either the value is not a bare host name and the entrypoint left it out (it says so in \`docker compose logs dsh\`; put only the hostname into .env, for example dsh.example.org), or the image is older than this option and its entrypoint does not know the variable (\`docker compose build dsh && docker compose up -d\`). Then run the smoke test again" >&2
+        fi
         exit 1
     fi
-    echo "ok    dsh was created with TUNNEL_HOSTNAME $tunnel_host"
+    echo "ok    dsh was started with TUNNEL_HOSTNAME $tunnel_host"
 
     # dsh also has to accept that hostname as an authority: the pages load
     # through the gate, but dsh's fence refuses API requests whose Host it was
@@ -385,7 +394,7 @@ if [ "$tunnel" = 1 ]; then
     status=$(printf '%s\n' "$answer" | awk '/^[0-9][0-9][0-9]$/')
     dsh_cookie=$(printf '%s\n' "$answer" | awk '$6 ~ /^dsh-auth-/ {printf "%s=%s", $6, $7}')
     if [ -z "$dsh_cookie" ]; then
-        echo "FAIL  opening the token URL through the tunnel listener with Host $tunnel_host answered ${status:-nothing} and set no dsh session cookie: dsh does not serve the public hostname. Was dsh recreated since TUNNEL_HOSTNAME was set? Has a dsh upgrade changed its trust fence?" >&2
+        echo "FAIL  opening the token URL through the tunnel listener with Host $tunnel_host answered ${status:-nothing} and set no dsh session cookie: dsh does not serve the public hostname although it was started with it. A dsh upgrade may have changed what its fence accepts" >&2
         exit 1
     fi
     out=$(in_dsh --http1.1 -o /dev/null -w '%{http_code} %{redirect_url}' -H "Host: $tunnel_host" -H "Origin: https://$tunnel_host" \
@@ -393,7 +402,7 @@ if [ "$tunnel" = 1 ]; then
         -H "$ws_h" -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
         http://caddy:8080/api/remote.mux 2>/dev/null | tr -d '\r' || true)
     if [ "${out%% *}" != 101 ]; then
-        echo "FAIL  WebSocket upgrade through the tunnel listener with Host $tunnel_host answered ${out:-nothing}, want 101" >&2
+        echo "FAIL  WebSocket upgrade through the tunnel listener with Host $tunnel_host answered ${out:-nothing}, want 101: dsh refuses API requests for a Host it was started with. A dsh upgrade may have changed what its fence accepts" >&2
         exit 1
     fi
     echo "ok    dsh serves the public hostname (session issued and WebSocket upgrade accepted through the tunnel listener)"
