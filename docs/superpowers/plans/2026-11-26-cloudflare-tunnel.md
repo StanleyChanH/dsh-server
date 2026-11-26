@@ -656,3 +656,62 @@ For each pair, the English and the Chinese file have the same headings in the sa
 3. The operator adds the three lines to `.env` themselves: the token is a secret and `.env` is never read or printed by anyone else.
 4. `docker compose build && docker compose up -d` in the deployment directory. This also replaces the dsh and auth-gate images with the ones built from the public tree, if the deployment still runs older ones.
 5. `scripts/smoke.sh`; section 11 is the first run against the real Cloudflare Access and decides whether its `302` pattern is the right one.
+
+## As executed (2026-11-26)
+
+Deviations from the plan above:
+
+- The assertion shipped for Task 1 is behavioural: `scripts/check.sh` runs the real
+  Caddyfile in the Compose caddy image against a stand-in for auth-gate and dsh, with
+  forged headers on both listeners. The planned assertion over `caddy adapt` only read the
+  shape of the configuration and could not see a Caddy upgrade that changes a default. The
+  workspace script of Step 5 was therefore not written.
+- What was measured on the cloudflared image changed the text, not the design: a token
+  that does not parse makes cloudflared exit at once, and so does having no network; only
+  a well-formed token that Cloudflare does not accept leaves it running and not ready.
+  `cloudflared tunnel ready` exits 0 against an endpoint that answers 200. The sandbox uses
+  a well-formed fake token.
+- The entrypoint test of Task 3 got a case for an empty `TUNNEL_HOSTNAME`, which the plan's
+  interface required but did not test.
+- Section 11 of the smoke test differs from the plan in its probe (b). A dsh session
+  belongs to the authority it was issued for, so the cookie of section 10 cannot be
+  presented with the public hostname; the probe obtains a session through the tunnel
+  listener first, the way automatic sign-in does. The private-listener probe of (c) needs
+  `-k`. The glob of the Access pattern was first written inside quotes, so that branch
+  could never match; the stand-in run caught it. The "does not answer" line first reported
+  the exit status of the negated pipeline, always 0; it now reports curl's.
+- Turning the tunnel off with `docker compose up -d --remove-orphans` leaves the
+  `<project>_tunnel` network behind. The runbook says so.
+- Task 6 also fixed, in a commit of its own, a pipe inside a code span of a
+  pre-existing troubleshooting row: in GFM it split the cell, and the rest of that row was
+  not rendered on GitHub.
+- The whole-branch review (one fresh reviewer, read-only) found three Important and six
+  Minor issues, and listed what it could not verify. Fixed afterwards, each seen failing
+  and then passing on the sandbox stack:
+  - A `TUNNEL_HOSTNAME` with a scheme or a path crash-looped dsh, and caddy waited for it:
+    one typo in the optional tunnel took the private entrance down (the reviewer's Minor 4,
+    re-graded by its effect). The entrypoint now leaves such a value out and says so;
+    section 11 reads the command line dsh was started with, which also names a stale
+    container and an image older than this option.
+  - The runbooks say what a mutating `docker compose` command does when it does not load
+    the override, that every other hostname routed to the tunnel needs an Access
+    application of its own, and that Cloudflare is in the path of the traffic.
+  - `SECURITY.md` and the design record no longer describe a stack that is never exposed.
+- Three minors were deferred: section 0 does not wait while cloudflared is still
+  `starting`; a Compose failure in the middle of section 11 ends the script without a FAIL
+  line; the public-hostname probe forces `--noproxy '*'` and its hints do not mention name
+  resolution, egress or a WAF rule. A listener that refuses every `Host` but
+  `TUNNEL_HOSTNAME` was not built: it needs the variable in caddy's environment and a
+  matcher whose behaviour with the variable unset was not measured.
+
+Verified: the five check groups and the `image` group on the final tree; the sandbox
+matrix (tunnel off, stand-ins for cloudflared and Access, the real image with a token
+Cloudflare does not accept) on the final tree; the documentation pairs; the stack running
+next to the sandbox unchanged, by container ID and start time.
+
+Not verified here, and open until the first run against a real tunnel: `cloudflared tunnel
+ready` with an accepted token; what Cloudflare Access answers to the probe of section
+11(d), and whether a WAF or bot rule answers first; whether the dashboard labels quoted in
+the runbook still apply; `routing()` on a GitHub runner, which has to reach container
+addresses. The rollout has not happened: it needs the operator's token and their decision
+on when dsh may be restarted.
