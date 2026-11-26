@@ -30,8 +30,17 @@ if [ -d /data/dsh/opt/mnemon-cli/@mnemon-dev/mnemon ]; then
   ln -sf ../lib/node_modules/@mnemon-dev/mnemon/bin/mnemon.js /usr/local/bin/mnemon
 fi
 
-exec dsh web --no-open \
+# The public hostname of a Cloudflare Tunnel (TUNNEL_HOSTNAME, see
+# compose.tunnel.yml) is a second authority dsh accepts. Its fence refuses
+# API requests whose Host it was not told about, and through the tunnel the
+# Host is that hostname.
+set -- web --no-open \
   --host "$IP" \
   --port 3080 \
   --public-url "$DSH_PUBLIC_URL" \
   --trusted-host "$DSH_TRUSTED_HOST"
+if [ -n "${TUNNEL_HOSTNAME:-}" ]; then
+  set -- "$@" --trusted-host "$TUNNEL_HOSTNAME"
+fi
+
+exec dsh "$@"

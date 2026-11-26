@@ -4,7 +4,8 @@
 #
 # Usage: scripts/check.sh [group ...]
 #   go          gofmt, go vet and go test for auth-gate, inside its build image
-#   shell       ShellCheck on scripts/*.sh and dsh/entrypoint.sh
+#   shell       ShellCheck on scripts/*.sh and dsh/entrypoint.sh, and the
+#               arguments the dsh entrypoint hands to dsh
 #   dockerfile  hadolint on both Dockerfiles, with .hadolint.yaml
 #   config      compose renders, the required variables are really required,
 #               the Caddyfile validates only with DSH_TRUSTED_HOST, each of
@@ -46,8 +47,42 @@ go() {
 }
 
 shell() {
-    echo '== shell: ShellCheck'
+    echo '== shell: ShellCheck, and the arguments the dsh entrypoint hands to dsh'
     docker run --rm -v "$PWD:/mnt:ro" koalaman/shellcheck:v0.11.0 -x scripts/*.sh dsh/entrypoint.sh
+
+    # What the dsh image's entrypoint hands to dsh, one argument per line,
+    # from a stand-in dsh. The address after --host is the container's own and
+    # differs per run, so that value is dropped.
+    entrypoint_args() {
+        local base
+        base=$(sed -n 's/^FROM \([^ ]*\)$/\1/p' dsh/Dockerfile | head -1)
+        docker run --rm -v "$PWD/dsh/entrypoint.sh:/entrypoint.sh:ro" -e DSH_TRUSTED_HOST=192.0.2.10 "$@" \
+            "$base" sh -c '
+                mkdir /fake
+                printf "#!/bin/sh\nprintf \"%%s\\n\" \"\$@\"\n" > /fake/dsh
+                chmod +x /fake/dsh
+                PATH="/fake:$PATH" exec /entrypoint.sh' \
+            | awk 'drop { drop = 0; next } $0 == "--host" { drop = 1 } { print }'
+    }
+    # hands <case> <want> <got>
+    hands() {
+        if [ "$2" != "$3" ]; then
+            echo "the dsh entrypoint hands dsh other arguments than expected ($1):" >&2
+            diff <(printf '%s\n' "$2") <(printf '%s\n' "$3") >&2 || true
+            return 1
+        fi
+    }
+    want="$(printf '%s\n' web --no-open --host --port 3080 --public-url https://192.0.2.10/ --trusted-host 192.0.2.10)"
+    got=$(entrypoint_args) || { echo 'cannot run the dsh entrypoint in its base image' >&2; return 1; }
+    hands 'TUNNEL_HOSTNAME not set' "$want" "$got"
+    got=$(entrypoint_args -e TUNNEL_HOSTNAME=) || { echo 'cannot run the dsh entrypoint in its base image' >&2; return 1; }
+    hands 'TUNNEL_HOSTNAME empty' "$want" "$got"
+    echo '   the dsh entrypoint hands dsh the expected arguments, also when TUNNEL_HOSTNAME is empty'
+    got=$(entrypoint_args -e TUNNEL_HOSTNAME=dsh.example.org) || { echo 'cannot run the dsh entrypoint in its base image' >&2; return 1; }
+    hands 'TUNNEL_HOSTNAME set' "$want
+--trusted-host
+dsh.example.org" "$got"
+    echo '   ...and the tunnel hostname as a second trusted authority when TUNNEL_HOSTNAME is set'
 }
 
 dockerfile() {
