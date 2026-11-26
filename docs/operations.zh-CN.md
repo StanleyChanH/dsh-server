@@ -386,7 +386,7 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate 以管理
 | curl 打 https://192.0.2.10 报 `000`/exit 35，openssl 看到 `tlsv1 alert internal error` | 站点是裸 IP，客户端不发 SNI（RFC 6066 禁止 IP 字面量），Caddy 挑不到证书。Caddyfile 全局块的 `default_sni {$DSH_TRUSTED_HOST}` 就是治这个的——它和站点地址都来自 `.env`，别手改 Caddyfile 写死 |
 | caddy 迟迟不起 | caddy `depends_on` 要求 dsh 与 auth-gate 都 healthy：`docker compose ps` 看谁 unhealthy，`docker compose logs dsh` / `logs auth-gate` 查原因 |
 | auth-gate 起不来（crash-loop：`stat /data/users.json: no such file`） | 首次部署 users.json 还不存在，先建第一个用户（`add-user.sh` 会自动走一次性容器），再 `docker compose up -d` |
-| dsh 不 healthy | 手跑健康检查同款命令：`docker compose exec dsh sh -c 'ip=$(hostname -i | awk "{print \$1}"); curl -s --noproxy "*" -o /dev/null --max-time 5 "http://$ip:3080/"; echo "rc=$? ip=$ip"'`。注意**不能加 `-f`**：dsh 的 `/` 对未认证请求就是 401（无 token/cookie），`curl -f` 把 401 当失败 → 永远 unhealthy |
+| dsh 不 healthy | 手跑健康检查同款命令：`docker compose exec dsh sh -c 'ip=$(hostname -i \| awk "{print \$1}"); curl -s --noproxy "*" -o /dev/null --max-time 5 "http://$ip:3080/"; echo "rc=$? ip=$ip"'`。注意**不能加 `-f`**：dsh 的 `/` 对未认证请求就是 401（无 token/cookie），`curl -f` 把 401 当失败 → 永远 unhealthy |
 | 浏览器证书告警 | 根证书未导入或已换 CA：重新分发 `caddy/data/caddy/pki/authorities/local/root.crt`（换 CA 后旧的要删；文件是 root:root 0600，宿主机取要 sudo） |
 | 一直跳登录页 / 登录后又弹回 | `docker compose logs auth-gate`；cookie 是 Secure 的，必须 `https://` 访问；密码错 5 次触发限流，等 1 分钟 |
 | 登录过了但停在「凭证同步中」页 | 自动换乘的 token 同步链断了或正在窗口内：先等 1 分钟（cron 自动补）；仍不行 `docker compose logs auth-gate`，手动回退 `scripts/dsh-url.sh` 取 URL 发该成员（见「自动换乘与降级模式」） |
