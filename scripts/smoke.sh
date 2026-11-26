@@ -23,7 +23,12 @@
 #   token rotation) - logged-in members keep their dsh cookie in practice, but
 #   open pages blip and reconnect;
 # - the token URL is only used on this host for comparison and exchange, and
-#   is always masked in the output (it is dsh's login credential).
+#   is always masked in the output (it is dsh's login credential);
+# - with the Cloudflare Tunnel enabled (`compose.tunnel.yml` in `.env`),
+#   section 11 also runs: it checks that dsh accepts the public hostname,
+#   which address the login rate limit counts on each listener, and - fetching
+#   the public hostname from this host - that Cloudflare Access is in front
+#   of it.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -35,6 +40,14 @@ if [ -z "${BASE_URL:-}" ]; then
     [ -n "$base_url" ] || { echo "smoke.sh: cannot tell which stack to test. Run it from the deployment directory with a valid .env, or set BASE_URL." >&2; exit 1; }
     BASE_URL="${base_url%/}"
 fi
+
+# compose.tunnel.yml in COMPOSE_FILE (.env) adds a fourth container and a
+# public hostname. Sections 0 and 11 take that into account.
+tunnel=0
+if [ "$(docker compose config --services 2>/dev/null | grep -cx cloudflared || true)" -ge 1 ]; then
+    tunnel=1
+fi
+tunnel_summary=""
 
 SMOKE_USER="smoketest"
 SMOKE_PASS="smoke-$(date +%s)-$RANDOM"
@@ -97,9 +110,15 @@ check() {
 command -v jq >/dev/null 2>&1 || { echo "smoke.sh needs jq (to delete the smoke user)" >&2; exit 1; }
 
 echo "== 0. service state =="
+want_running=3
+services="dsh auth-gate"
+if [ "$tunnel" = 1 ]; then
+    want_running=4
+    services="$services cloudflared"
+fi
 n=$(docker compose ps --status running -q | wc -l | tr -d ' ')
-check "running containers = 3" 3 "$n"
-for svc in dsh auth-gate; do
+check "running containers = $want_running" "$want_running" "$n"
+for svc in $services; do
     cid=$(docker compose ps --all -q "$svc")
     [ -n "$cid" ] || { echo "FAIL  $svc has no container (is the stack up?)" >&2; exit 1; }
     st=$(docker inspect -f '{{.State.Health.Status}}' "$cid")
@@ -332,5 +351,130 @@ awk '{print $6}' "$CJ_ENTRY" | grep -q '^dsh-auth-' \
     && echo "ok    the chain produced a dsh-auth-* cookie (really inside dsh, not the login or sync page)" \
     || { echo "FAIL  the sign-in chain produced no dsh-auth-* cookie" >&2; exit 1; }
 
+if [ "$tunnel" = 1 ]; then
+    echo "== 11. Cloudflare Tunnel (dsh accepts the public hostname, the rate limit counts the visitor, Cloudflare Access is in front) =="
+    tunnel_host=$(docker compose config --format json 2>/dev/null | jq -r '.services.dsh.environment.TUNNEL_HOSTNAME // ""')
+    [ -n "$tunnel_host" ] || { echo "FAIL  TUNNEL_HOSTNAME is not set, although compose.tunnel.yml is active" >&2; exit 1; }
+
+    # A container keeps the environment it was created with: dsh was told the
+    # public hostname when it was created, not when .env was edited.
+    got=$(docker compose exec -T dsh printenv TUNNEL_HOSTNAME 2>/dev/null || true)
+    if [ "$got" != "$tunnel_host" ]; then
+        echo "FAIL  dsh was created with TUNNEL_HOSTNAME \"$got\", not \"$tunnel_host\": a container keeps the environment it was created with. Run \`docker compose up -d\` to recreate it" >&2
+        exit 1
+    fi
+    echo "ok    dsh was created with TUNNEL_HOSTNAME $tunnel_host"
+
+    # dsh also has to accept that hostname as an authority: the pages load
+    # through the gate, but dsh's fence refuses API requests whose Host it was
+    # not told about (403). A dsh session belongs to the authority it was
+    # issued for (the cookie names it), so the one in $CJ_ENTRY, issued for
+    # DSH_TRUSTED_HOST, is of no use here. One for the public hostname is
+    # obtained first, the way automatic sign-in obtains it for a member: the
+    # token URL is opened with Host set to the public hostname, through the
+    # tunnel listener (http://caddy:8080 in the Caddyfile). The WebSocket
+    # probe of section 6 then goes the same way. Both run inside the dsh
+    # container (in_dsh), and the cookies go in as a literal header: the URL
+    # host is not $BASE_URL and the listener is plain http, so a jar would
+    # send none.
+    in_dsh() { docker compose exec -T dsh curl -s --noproxy '*' --max-time 10 "$@"; }
+    gate_cookie="gate_session=$(awk '$6 == "gate_session" {print $7}' "$CJ_ENTRY")"
+    url=$(scripts/dsh-url.sh)                    # holds the token: never printed
+    tunnel_url="http://caddy:8080/${url#*://*/}" # the same path and query, through the tunnel listener
+    answer=$(in_dsh -o /dev/null -c - -w '%{http_code}\n' -H "Host: $tunnel_host" -H "Cookie: $gate_cookie" "$tunnel_url" | tr -d '\r' || true)
+    status=$(printf '%s\n' "$answer" | awk '/^[0-9][0-9][0-9]$/')
+    dsh_cookie=$(printf '%s\n' "$answer" | awk '$6 ~ /^dsh-auth-/ {printf "%s=%s", $6, $7}')
+    if [ -z "$dsh_cookie" ]; then
+        echo "FAIL  opening the token URL through the tunnel listener with Host $tunnel_host answered ${status:-nothing} and set no dsh session cookie: dsh does not serve the public hostname. Was dsh recreated since TUNNEL_HOSTNAME was set? Has a dsh upgrade changed its trust fence?" >&2
+        exit 1
+    fi
+    out=$(in_dsh --http1.1 -o /dev/null -w '%{http_code} %{redirect_url}' -H "Host: $tunnel_host" -H "Origin: https://$tunnel_host" \
+        -H 'Sec-Fetch-Site: same-origin' -H "Cookie: $gate_cookie; $dsh_cookie" \
+        -H "$ws_h" -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+        http://caddy:8080/api/remote.mux 2>/dev/null | tr -d '\r' || true)
+    if [ "${out%% *}" != 101 ]; then
+        echo "FAIL  WebSocket upgrade through the tunnel listener with Host $tunnel_host answered ${out:-nothing}, want 101" >&2
+        exit 1
+    fi
+    echo "ok    dsh serves the public hostname (session issued and WebSocket upgrade accepted through the tunnel listener)"
+
+    # Which address the login rate limit counts, per listener. Both probes
+    # come from the dsh container and carry addresses a client could forge;
+    # auth-gate logs the address it counted for every login attempt. With the
+    # tunnel on, caddy has a second address on the tunnel network, which the
+    # dsh container cannot reach, so the default-network one is used.
+    project=$(docker compose config --format json 2>/dev/null | jq -r '.name')
+    address() { docker inspect -f "{{with index .NetworkSettings.Networks \"${project}_default\"}}{{.IPAddress}}{{end}}" "$(docker compose ps -q "$1")"; }
+    caddy_ip=$(address caddy)
+    dsh_ip=$(address dsh)
+    trusted_host=$(docker compose config --format json 2>/dev/null | jq -r '.services.caddy.environment.DSH_TRUSTED_HOST // ""')
+    # counted_address <curl arguments...>: the address auth-gate counted for
+    # one login attempt with a wrong password, under a name no other attempt
+    # uses. Prints nothing when no log line shows up; probe_code then holds
+    # what the attempt answered. -k: the private listener uses the internal CA.
+    counted_address() {
+        local name="xff-$RANDOM-$RANDOM" ip i
+        probe_code=$(in_dsh -k -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+            -d "{\"username\":\"$name\",\"password\":\"wrong\"}" "$@" 2>/dev/null || true)
+        ip=""
+        for i in 1 2 3 4 5; do
+            ip=$(docker compose logs --no-color auth-gate 2>/dev/null | grep -F "user=\"$name\"" | tail -1 | sed -n 's/.* ip=\([^ ]*\) result=.*/\1/p' || true)
+            [ -n "$ip" ] && break
+            sleep 1
+        done
+        printf '%s' "$ip"
+    }
+    # counted <label> <want> <curl arguments...>
+    counted() {
+        local got
+        got=$(counted_address "${@:3}")
+        if [ -z "$got" ]; then
+            echo "FAIL  $1: the login attempt answered ${probe_code:-nothing}, and auth-gate logged no address for it" >&2
+            exit 1
+        fi
+        check "$1" "$2" "$got"
+    }
+    [ -n "$caddy_ip" ] && [ -n "$dsh_ip" ] && [ -n "$trusted_host" ] \
+        || { echo "FAIL  cannot find the addresses of caddy and dsh in the ${project}_default network, or DSH_TRUSTED_HOST" >&2; exit 1; }
+    counted "private listener: the login rate limit counts the peer, whatever the client sent" "$dsh_ip" \
+        -H 'X-Forwarded-For: 192.0.2.1' -H 'Cf-Connecting-Ip: 192.0.2.1' \
+        --resolve "$trusted_host:443:$caddy_ip" "https://$trusted_host/auth/login"
+    counted "tunnel listener: the login rate limit counts Cf-Connecting-Ip, whatever the client sent" 203.0.113.9 \
+        -H 'Cf-Connecting-Ip: 203.0.113.9' -H 'X-Forwarded-For: 192.0.2.1' http://caddy:8080/auth/login
+
+    # From this host, over the Internet: the public hostname has to answer
+    # through Cloudflare, and Cloudflare Access has to be in front of it. dsh
+    # runs whatever its users ask it to, so the login page must not be
+    # reachable by anyone: Access keeps strangers away, and the gate then asks
+    # for the member's password. The login endpoint is asked as well as the
+    # front page: an Access application that covers only one path leaves the
+    # other open.
+    hints="Check: docker compose ps cloudflared (it has to be healthy), docker compose logs cloudflared, and that the public hostname's service in the Cloudflare dashboard is http://caddy:8080"
+    for path in / /auth/login; do
+        url="https://$tunnel_host$path"
+        # curl's own explanation of a failure (timeout, certificate, name
+        # resolution) goes to stderr before the FAIL line.
+        rc=0
+        headers=$(curl -sS --noproxy '*' --max-time 20 -H 'Accept: text/html' -o /dev/null -D - "$url" | tr -d '\r') || rc=$?
+        if [ "$rc" != 0 ]; then
+            echo "FAIL  $url does not answer (curl exit $rc); does this host resolve the name? $hints" >&2
+            exit 1
+        fi
+        status=$(printf '%s\n' "$headers" | awk 'NR == 1 {print $2}')
+        location=$(printf '%s\n' "$headers" | awk 'tolower($1) == "location:" {print $2}' | tail -1)
+        case "$status $location" in
+            '302 https://'*'cloudflareaccess.com/'*)
+                echo "ok    Cloudflare Access is in front of $url" ;;
+            '302 /auth/'*)
+                echo "FAIL  $url is on the Internet with nothing but the login gate in front of it. Create the Access application for the hostname (docs/operations.md, \"Cloudflare Tunnel\"), then run the smoke test again" >&2
+                exit 1 ;;
+            *)
+                echo "FAIL  $url answered \"${status:-nothing}\", expected a redirect to Cloudflare Access. $hints" >&2
+                exit 1 ;;
+        esac
+    done
+    tunnel_summary=" and https://$tunnel_host/ (Cloudflare Tunnel)"
+fi
+
 echo
-echo "All smoke checks passed: $BASE_URL"
+echo "All smoke checks passed: $BASE_URL$tunnel_summary"
