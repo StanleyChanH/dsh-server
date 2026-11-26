@@ -121,8 +121,11 @@ reworked together with the planned login-page redesign.
 - **dsh** (`DSH_VERSION` in `.env.example`): bump it only to a version you have run the
   smoke test with, and say so in the commit. Upgrades are deliberate, one version at a
   time.
-- **Go**: the build image is `golang:1.24-alpine`. A dependency bump that needs a newer Go
-  has to bump that image in the same change.
+- **Go and x/crypto**: the build image is `golang:1.24-alpine`, and
+  `golang.org/x/crypto` is pinned at 0.48.0, the newest release that builds with Go 1.24
+  (from 0.49.0 on it needs Go 1.25 or newer). Dependabot is told to skip newer x/crypto
+  releases for that reason. To take one, bump the Go image in `auth-gate/Dockerfile` in
+  the same change. Any other dependency bump that needs a newer Go works the same way.
 - **pnpm, gh, mnemon** in `dsh/Dockerfile`: pinned on purpose. For gh, change `GH_VERSION`
   and the sha256 together.
 

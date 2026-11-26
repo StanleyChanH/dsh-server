@@ -1,13 +1,21 @@
-# Dependabot keeps the Go dependency of auth-gate and the pinned GitHub
-# Actions current. It opens pull requests; CI has to be green before one is
-# merged. Base-image tags in the Dockerfiles are bumped by hand: they need a
-# rebuild and a smoke test (see CONTRIBUTING.md, "Version pins").
+# Dependabot keeps the pinned GitHub Actions current and opens pull requests
+# for them; CI has to be green before one is merged. The Go dependency of
+# auth-gate is listed too, with one exception (see below). Base-image tags in
+# the Dockerfiles are bumped by hand: they need a rebuild and a smoke test
+# (see CONTRIBUTING.md, "Version pins").
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: /auth-gate
     schedule:
       interval: weekly
+    ignore:
+      # From 0.49.0 on, x/crypto needs Go 1.25 or newer, and auth-gate builds
+      # with golang:1.24-alpine, so such a bump fails CI every time. 0.48.0 is
+      # the newest release that builds with Go 1.24. A newer x/crypto comes
+      # together with the Go image (CONTRIBUTING.md, "Version pins").
+      - dependency-name: golang.org/x/crypto
+        versions: [">=0.49.0"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
