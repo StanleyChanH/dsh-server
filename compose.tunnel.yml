@@ -1,0 +1,84 @@
+# Cloudflare Tunnel: an optional second entrance to the stack, for members who
+# are on neither the LAN nor the VPN. It needs no inbound port, public IP or
+# port forwarding: cloudflared connects to Cloudflare and keeps that
+# connection open, and Cloudflare sends the requests through it. Cloudflare
+# Access sits in front of the public hostname and is configured in the
+# Cloudflare dashboard (docs/operations.md, "Cloudflare Tunnel"); the login
+# gate applies behind it as everywhere else.
+#
+# Enable it in .env (the three lines are in .env.example, commented out):
+#   COMPOSE_FILE=compose.yml:compose.tunnel.yml
+#   TUNNEL_TOKEN=...      TUNNEL_HOSTNAME=dsh.example.org
+# then run `docker compose up -d` from the deployment directory. Without the
+# COMPOSE_FILE line this file is not read, and the stack is exactly what
+# compose.yml describes.
+#
+# COMPOSE_FILE holds relative paths, which Compose resolves against the
+# directory the command is run from, and it is not read when --env-file is
+# given. So run every docker compose command in the deployment directory
+# itself.
+
+services:
+  caddy:
+    # Joins the tunnel network next to the default one, so that cloudflared
+    # can reach its tunnel listener (http://:8080 in the Caddyfile). Changing
+    # a container's networks means recreating it, never restarting.
+    networks:
+      default:
+      tunnel:
+
+  cloudflared:
+    # Pinned on purpose: a bump is `docker compose up -d cloudflared` and a
+    # smoke test.
+    image: cloudflare/cloudflared:2026.11.2
+    # The image's entrypoint is the cloudflared binary, and its default
+    # argument only prints the version, so `tunnel run` is given here. With
+    # TUNNEL_TOKEN set it needs neither a credentials file nor a volume.
+    command: ["tunnel", "run"]
+    environment:
+      # Required. Cloudflare Zero Trust > Networks > Tunnels: the token of the
+      # tunnel whose public hostname points to http://caddy:8080. It is a
+      # secret: whoever holds it can connect a server to the tunnel.
+      TUNNEL_TOKEN: "${TUNNEL_TOKEN:?TUNNEL_TOKEN is not set in .env (Cloudflare Zero Trust > Networks > Tunnels: the token of the tunnel; see docs/operations.md, Cloudflare Tunnel)}"
+      # Where cloudflared serves its metrics and readiness endpoint. The
+      # healthcheck below asks for it, and `cloudflared tunnel ready` reads
+      # the same variable, so the address is written once. 127.0.0.1 keeps the
+      # endpoint inside the container.
+      TUNNEL_METRICS: "127.0.0.1:2000"
+    # The tunnel network only. cloudflared reaches caddy and nothing else: a
+    # wrong service address in the Cloudflare dashboard (dsh:3080, say) is not
+    # routable from here, so no dashboard mistake can skip the login gate.
+    networks:
+      - tunnel
+    depends_on:
+      - caddy
+    restart: unless-stopped
+    healthcheck:
+      # `ready` asks the readiness endpoint and exits non-zero until a
+      # connection to Cloudflare's edge is up. When cloudflared cannot even
+      # start connecting (a token that does not parse, no network), it exits
+      # and the restart policy starts it again; a token that Cloudflare does
+      # not accept leaves it running but not ready. In neither state does the
+      # container become healthy. The image has no shell, so this is the exec
+      # (array) form.
+      test: ["CMD", "cloudflared", "tunnel", "ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  dsh:
+    environment:
+      # Required. The public hostname of the tunnel, for example
+      # dsh.example.org: no scheme and no path. dsh accepts it as a second
+      # authority next to DSH_TRUSTED_HOST; without it the pages would load
+      # but every API call from the public hostname would be refused.
+      TUNNEL_HOSTNAME: "${TUNNEL_HOSTNAME:?TUNNEL_HOSTNAME is not set in .env (the public hostname of the Cloudflare Tunnel, for example dsh.example.org; see docs/operations.md, Cloudflare Tunnel)}"
+
+networks:
+  tunnel:

@@ -7,8 +7,9 @@
 #   shell       ShellCheck on scripts/*.sh and dsh/entrypoint.sh
 #   dockerfile  hadolint on both Dockerfiles, with .hadolint.yaml
 #   config      compose renders, the required variables are really required,
-#               the Caddyfile validates only with DSH_TRUSTED_HOST, and each
-#               of its listeners hands the backends the right client address
+#               the Caddyfile validates only with DSH_TRUSTED_HOST, each of
+#               its listeners hands the backends the right client address, and
+#               compose.tunnel.yml keeps cloudflared to its own network
 #   build       the auth-gate image builds (never with --pull)
 #   image       the dsh image builds and has what it should (about 3.4 GB and
 #               several minutes, so it is not part of the default run)
@@ -66,7 +67,7 @@ compose_ok()   { docker compose --env-file /dev/null config -q; }
 
 config() {
     echo '== config: compose and Caddyfile'
-    local host=192.0.2.10 secret json caddy_image
+    local host=192.0.2.10 secret json caddy_image n
     secret=$(printf 'ab%.0s' $(seq 32))
     export DSH_TRUSTED_HOST=$host DSH_VERSION=0.2.2-rc.5 AUTH_GATE_SECRET=$secret
 
@@ -79,6 +80,16 @@ config() {
         return 1
     fi
     echo '   compose derives the address from DSH_TRUSTED_HOST'
+
+    # Without compose.tunnel.yml there is nothing of the tunnel: no service,
+    # no variable, no second network.
+    if ! echo "$json" | jq -e '(.services | has("cloudflared") | not)
+        and (.services.dsh.environment | has("TUNNEL_HOSTNAME") | not)
+        and ((.networks | keys) == ["default"])' >/dev/null; then
+        echo 'the base compose files mention the tunnel; without compose.tunnel.yml there must be nothing of it' >&2
+        return 1
+    fi
+    echo '   without compose.tunnel.yml there is no tunnel service, variable or network'
 
     json=$(DSH_PUBLIC_URL=https://dsh.example.org/ compose_json)
     if [ "$(echo "$json" | jq -r '.services.dsh.environment.DSH_PUBLIC_URL')" != https://dsh.example.org/ ]; then
@@ -118,6 +129,35 @@ config() {
         return 1
     fi
     echo '   the Caddyfile adapts without warnings'
+
+    # The tunnel override, loaded by its name: a deployment loads it through
+    # COMPOSE_FILE in .env, which --env-file would bypass.
+    tunnel_json() { docker compose --env-file /dev/null -f compose.yml -f compose.tunnel.yml config --format json; }
+    tunnel_ok()   { docker compose --env-file /dev/null -f compose.yml -f compose.tunnel.yml config -q; }
+    export TUNNEL_TOKEN=fake-token TUNNEL_HOSTNAME=dsh.example.org
+
+    json=$(tunnel_json)
+    if ! echo "$json" | jq -e '
+        (.services.caddy.networks | keys | sort) == ["default", "tunnel"]
+        and (.services.cloudflared.networks | keys | sort) == ["tunnel"]
+        and (.services["auth-gate"].networks | keys | sort) == ["default"]
+        and (.services.dsh.networks | keys | sort) == ["default"]
+        and (((.services.cloudflared.depends_on) // {}) | keys) == ["caddy"]
+        and (.services.caddy.depends_on | has("cloudflared") | not)
+        and (.services.cloudflared.ports == null)
+        and (([.services.caddy.ports[].published] | sort) == ["443", "80"])
+        and (.services.dsh.environment.TUNNEL_HOSTNAME == "dsh.example.org")
+        and (.services.cloudflared.environment.TUNNEL_TOKEN == "fake-token")' >/dev/null; then
+        echo 'compose.tunnel.yml does not keep cloudflared to its own network, or does not pass the tunnel variables as it should' >&2
+        return 1
+    fi
+    echo '   compose.tunnel.yml: cloudflared reaches caddy only; caddy publishes the same two ports as before'
+
+    if (unset TUNNEL_TOKEN; tunnel_ok) >/dev/null 2>&1 || (unset TUNNEL_HOSTNAME; tunnel_ok) >/dev/null 2>&1; then
+        echo 'the tunnel override renders without TUNNEL_TOKEN or TUNNEL_HOSTNAME; both are required' >&2
+        return 1
+    fi
+    echo '   the tunnel override refuses to render without TUNNEL_TOKEN or TUNNEL_HOSTNAME'
 
     routing "$caddy_image"
 }

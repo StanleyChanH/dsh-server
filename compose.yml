@@ -7,6 +7,9 @@
 # it through an environment placeholder, and dsh receives it as --trusted-host
 # (and, by default, as its public URL).
 #
+# A Cloudflare Tunnel is an optional second, public entrance:
+# compose.tunnel.yml, enabled through COMPOSE_FILE in .env.
+#
 # A container keeps the environment it was created with, and `restart` does not
 # change that. So apply changes by recreating, never by restarting:
 #   after editing .env:                 `docker compose up -d`  (recreates caddy and dsh)
