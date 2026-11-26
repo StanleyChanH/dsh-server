@@ -302,6 +302,15 @@ func TestClientIP(t *testing.T) {
 	if got := clientIP(req); got != "192.0.2.1" {
 		t.Errorf("clientIP(无 XFF) = %q, want RemoteAddr host %q", got, "192.0.2.1")
 	}
+
+	// Present but empty: what caddy forwards for a request on the tunnel
+	// listener that carries no Cf-Connecting-Ip (caddy/Caddyfile, :8080).
+	req = httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.Header.Set("X-Forwarded-For", "")
+	if got := clientIP(req); got != "192.0.2.1" {
+		t.Errorf("clientIP(空 XFF) = %q, want RemoteAddr host %q", got, "192.0.2.1")
+	}
 }
 
 // ---- Automatic sign-in on 401: /auth/dsh-entry (increment of 2026-11-22) ----
