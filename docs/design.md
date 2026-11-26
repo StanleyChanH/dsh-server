@@ -331,7 +331,9 @@ server", the gate "which member is this", and dsh has its own session on top. Pl
    hostname and is in the path of everything members send and receive, the dsh token URL
    and the session cookies included. And the tunnel listener answers any `Host`: the
    stack knows one public hostname, and any other hostname routed to the tunnel reaches
-   the login page unless it has an Access application of its own.
+   the login page unless it has an Access application of its own. The dashboard has a
+   setting per route, *Protect with Access*, that makes cloudflared check the Access JWT
+   before it forwards a request; this stack neither sets nor tests it.
 7. **Smoke section 11** checks what a deployment can get wrong after enabling it: dsh was
    created with the current `TUNNEL_HOSTNAME` and serves it (a session is obtained through
    the tunnel listener, and a WebSocket upgrade is accepted), the rate limit counts the
@@ -372,5 +374,6 @@ Caddyfile that counts a forged address. With the entrypoint passing a pasted URL
 crash-looped and a recreated caddy never started; with the entrypoint as committed, dsh
 runs and the private entrance answers. No running deployment was involved. **Open at the
 time of writing**: the answer of Cloudflare Access to the smoke test's request was matched
-against a stand-in. The first run against a real tunnel decides whether the `302` pattern
-is the right one, and whether the dashboard labels quoted in the runbook still apply.
+against a stand-in; the first run against a real tunnel decides whether the `302` pattern
+is the right one. The runbook's menu names follow Cloudflare's documentation of November
+2026 and have not been clicked through in a dashboard.

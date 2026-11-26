@@ -257,7 +257,8 @@ Noto Sans CJK SC / Noto Sans Mono CJK SC / Liberation Sans / Noto Color Emoji；
    跳转就失败。隧道本身带来两件事。公网主机名的 TLS 由 Cloudflare 终结，成员收发的
    一切都经过它，包括 dsh token URL 和会话 cookie。隧道监听器应答任何 `Host`：栈只认
    一个公网主机名，路由到这条隧道的其他主机名除非有自己的 Access 应用，否则直达
-   登录页。
+   登录页。面板里每条路由有一个 *Protect with Access* 设置，让 cloudflared 在转发请
+   求之前校验 Access 的 JWT；栈既不设置也不测试它。
 7. **smoke §11** 检查启用之后可能出错的各个环节：dsh 是带着当前的 `TUNNEL_HOSTNAME`
    创建的并且认它（经隧道监听器取得会话、WebSocket 升级被接受）、限流在两个监听器
    上各按正确的地址计数、Access 挡在首页和登录端点两个路径前面。
@@ -291,5 +292,5 @@ Noto Sans CJK SC / Noto Sans Mono CJK SC / Liberation Sans / Noto Color Emoji；
 entrypoint 把带协议的网址原样传给 dsh 时，dsh 崩溃循环、重建的 caddy 起不来；按提交
 的 entrypoint，dsh 正常运行，私有入口照常应答。没有涉及任何运行中的部署。
 **写作时尚未了结**：Cloudflare Access 对冒烟测试请求的应答是用替身比对的。第一次
-对着真实隧道运行，才能确定 `302` 这个模式对不对，以及运维手册里引用的面板文案是否
-仍然适用。
+对着真实隧道运行，才能确定 `302` 这个模式对不对。运维手册里的菜单名取自 Cloudflare
+2026 年 11 月的文档，没有在面板里逐个点过。

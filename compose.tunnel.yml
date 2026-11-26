@@ -36,10 +36,10 @@ services:
     # TUNNEL_TOKEN set it needs neither a credentials file nor a volume.
     command: ["tunnel", "run"]
     environment:
-      # Required. Cloudflare Zero Trust > Networks > Tunnels: the token of the
-      # tunnel whose public hostname points to http://caddy:8080. It is a
+      # Required. Cloudflare dashboard > Networking > Tunnels: the token of the
+      # tunnel whose published route points to http://caddy:8080. It is a
       # secret: whoever holds it can connect a server to the tunnel.
-      TUNNEL_TOKEN: "${TUNNEL_TOKEN:?TUNNEL_TOKEN is not set in .env (Cloudflare Zero Trust > Networks > Tunnels: the token of the tunnel; see docs/operations.md, Cloudflare Tunnel)}"
+      TUNNEL_TOKEN: "${TUNNEL_TOKEN:?TUNNEL_TOKEN is not set in .env (Cloudflare dashboard > Networking > Tunnels: the token of the tunnel; see docs/operations.md, Cloudflare Tunnel)}"
       # Where cloudflared serves its metrics and readiness endpoint. The
       # healthcheck below asks for it, and `cloudflared tunnel ready` reads
       # the same variable, so the address is written once. 127.0.0.1 keeps the
