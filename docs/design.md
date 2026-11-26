@@ -339,6 +339,10 @@ server", the gate "which member is this", and dsh has its own session on top. Pl
    the tunnel listener, and a WebSocket upgrade is accepted), the rate limit counts the
    right address on each listener, and Access is in front of both the front page and the
    login endpoint.
+8. **The protocol is cloudflared's default unless a deployment says otherwise.** `auto`
+   starts with QUIC and falls back to HTTP/2. `TUNNEL_PROTOCOL` in `.env` fixes it (`quic`
+   or `http2`) through `TUNNEL_TRANSPORT_PROTOCOL`. The default is written out as `auto`,
+   because an empty value is not `auto`: cloudflared exits on "unknown protocol".
 
 **Measured, and relied upon** (Caddy 2.10.2, cloudflared 2026.11.2, Compose 5.5.0):
 
@@ -353,7 +357,13 @@ server", the gate "which member is this", and dsh has its own session on top. Pl
   network at all (status 1). With a well-formed token that Cloudflare does not accept it
   runs, answers 503 on `/ready`, and is restarted by Docker from time to time.
   `cloudflared tunnel ready` reads `TUNNEL_METRICS`; it exits 0 against an endpoint that
-  answers 200 and 1 otherwise. This version has no `--protocol` flag.
+  answers 200 and 1 otherwise. The protocol is set with `TUNNEL_TRANSPORT_PROTOCOL`
+  (`auto`, `quic`, `http2`); an empty or unknown value makes cloudflared exit at once.
+- Where UDP to Cloudflare is throttled, measured on one such network: with `auto`, two of
+  three starts ended in `Register tunnel error ... context deadline exceeded` and exit
+  code 1, the third fell back to HTTP/2 after a QUIC timeout and then held four HTTP/2
+  connections without an error. With `http2` forced, three starts each registered four
+  connections in 6 to 8 seconds.
 - A dsh session is bound to the authority it was issued for: the cookie payload names it,
   and dsh answers 401 to the same cookie presented with another `Host`.
 - Neither dsh nor auth-gate reads `X-Forwarded-Proto`, and both cookies are `Secure`
@@ -361,19 +371,23 @@ server", the gate "which member is this", and dsh has its own session on top. Pl
 
 **Verified**: `scripts/check.sh` runs the Caddyfile against a stand-in for auth-gate and
 dsh and asserts what each listener hands the backends, with forged headers on both; six
-mutations of the Caddyfile are each reported. The Compose checks assert the topology and
-the two required variables; six mutations of the override are each reported. The
-entrypoint's argument list is checked in the base image of the dsh image, also for an empty
-`TUNNEL_HOSTNAME` and for values that are not bare host names. A unit test pins that an
-empty `X-Forwarded-For` falls back to the peer. On a sandbox stack with a real dsh built
+mutations of the Caddyfile are each reported. The Compose checks assert the topology, the
+two required variables and the protocol; ten mutations of the override are each reported.
+The entrypoint's argument list is checked in the base image of the dsh image, also for an
+empty `TUNNEL_HOSTNAME` and for values that are not bare host names. A unit test pins that
+an empty `X-Forwarded-For` falls back to the peer. On a sandbox stack with a real dsh built
 from the tree (no published ports, a project and image tags of its own), the unchanged
 smoke test passed with the tunnel off;
 with stand-ins for cloudflared and Access, sections 0 to 11 passed, and each new check was
 also seen failing for its own reason, among them dsh running the previous entrypoint and a
 Caddyfile that counts a forged address. With the entrypoint passing a pasted URL on, dsh
 crash-looped and a recreated caddy never started; with the entrypoint as committed, dsh
-runs and the private entrance answers. No running deployment was involved. **Open at the
-time of writing**: the answer of Cloudflare Access to the smoke test's request was matched
-against a stand-in; the first run against a real tunnel decides whether the `302` pattern
-is the right one. The runbook's menu names follow Cloudflare's documentation of November
-2026 and have not been clicked through in a dashboard.
+runs and the private entrance answers. No running deployment was involved.
+**Checked against a real tunnel on 2026-11-26**, with a stand-in for caddy on a network of
+its own and no deployment involved: the edge answers the smoke test's unauthenticated
+request with `302` to `https://<team>.cloudflareaccess.com/...`, the pattern the smoke
+test expects, and `cloudflared tunnel ready` exits 0 once a real token is registered.
+**Open at the time of writing**: the runbook's menu names follow Cloudflare's
+documentation of November 2026 and have not been clicked through in a dashboard; a request
+that passed Access has not yet been seen reaching `caddy:8080`; and the smoke test's
+section 11 has not yet run against a deployment with a real tunnel.

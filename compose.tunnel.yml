@@ -6,7 +6,8 @@
 # Cloudflare dashboard (docs/operations.md, "Cloudflare Tunnel"); the login
 # gate applies behind it as everywhere else.
 #
-# Enable it in .env (the three lines are in .env.example, commented out):
+# Enable it in .env (the first three lines of the tunnel block in .env.example,
+# commented out; the fourth, TUNNEL_PROTOCOL, is optional):
 #   COMPOSE_FILE=compose.yml:compose.tunnel.yml
 #   TUNNEL_TOKEN=...      TUNNEL_HOSTNAME=dsh.example.org
 # then run `docker compose up -d` from the deployment directory. Without the
@@ -45,6 +46,13 @@ services:
       # the same variable, so the address is written once. 127.0.0.1 keeps the
       # endpoint inside the container.
       TUNNEL_METRICS: "127.0.0.1:2000"
+      # How cloudflared reaches Cloudflare's edge: auto (QUIC first, HTTP/2
+      # over TCP as the fallback), quic or http2. auto is cloudflared's own
+      # default, but an empty value is not: it makes cloudflared exit at once,
+      # so the default is written out. TUNNEL_PROTOCOL=http2 in .env is for
+      # networks where UDP to Cloudflare is throttled and the first connection
+      # keeps timing out.
+      TUNNEL_TRANSPORT_PROTOCOL: "${TUNNEL_PROTOCOL:-auto}"
     # The tunnel network only. cloudflared reaches caddy and nothing else: a
     # wrong service address in the Cloudflare dashboard (dsh:3080, say) is not
     # routable from here, so no dashboard mistake can skip the login gate.
@@ -56,7 +64,8 @@ services:
     healthcheck:
       # `ready` asks the readiness endpoint and exits non-zero until a
       # connection to Cloudflare's edge is up. When cloudflared cannot even
-      # start connecting (a token that does not parse, no network), it exits
+      # start connecting (a token that does not parse, no network, an unknown
+      # protocol), it exits
       # and the restart policy starts it again; a token that Cloudflare does
       # not accept leaves it running but not ready. In neither state does the
       # container become healthy. The image has no shell, so this is the exec

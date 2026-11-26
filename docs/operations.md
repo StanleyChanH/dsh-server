@@ -323,9 +323,10 @@ menus from time to time.
    name, and the connection stays inside the Compose network, so it is HTTP and not
    HTTPS.
 4. **Enable it in `.env`.** Copy the three lines of the *Cloudflare Tunnel* block from
-   `.env.example` into `.env`, uncommented and filled in: `COMPOSE_FILE`, `TUNNEL_TOKEN`
-   (the token from step 1) and `TUNNEL_HOSTNAME` (the public hostname from step 3: only
-   the host name, without scheme or path).
+   `.env.example` into `.env`, uncommented and filled in (the fourth line there,
+   `TUNNEL_PROTOCOL`, is optional): `COMPOSE_FILE`, `TUNNEL_TOKEN` (the token from step 1)
+   and `TUNNEL_HOSTNAME` (the public hostname from step 3: only the host name, without
+   scheme or path).
 5. **Apply it**, in the deployment directory:
 
    ```sh
@@ -356,7 +357,7 @@ calls).
 
 ### Turn it off
 
-Remove the `COMPOSE_FILE` line from `.env` (and, if you like, the two variables), then:
+Remove the `COMPOSE_FILE` line from `.env` (and, if you like, the tunnel variables), then:
 
 ```sh
 docker compose up -d --remove-orphans
@@ -385,6 +386,12 @@ Cloudflare dashboard afterwards.
   it was created with, and the smoke test says so when it was not recreated.
 - After a cloudflared version bump, `docker compose up -d cloudflared`, then the smoke
   test.
+- cloudflared reaches Cloudflare over QUIC (UDP) first and falls back to HTTP/2 (TCP);
+  that is its default, `auto`. Where UDP to Cloudflare is throttled, a start can end
+  with `Register tunnel error ... context deadline exceeded` and exit code 1 before the
+  fallback, and Docker restarts the container (on the network measured here, the third
+  start got through). Set `TUNNEL_PROTOCOL=http2` in `.env` there, then `docker compose
+  up -d cloudflared`: the connector starts over TCP at once.
 - Through the tunnel the visitor's address comes from `Cf-Connecting-Ip`. Cloudflare
   features that remove or rewrite that header ("Remove visitor IP headers", Pseudo IPv4
   in mode "Overwrite Headers") make all tunnel visitors share one login rate-limit bucket:
@@ -500,7 +507,7 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate runs as t
 | `dsh-url.sh` finds no URL | The container is not up or the logs rotated: look at `docker compose logs dsh` |
 | `smoke.sh` exits at once, saying it cannot tell which stack to test | There is no valid `.env` in the current directory (the script runs from the deployment directory and takes its target from `docker compose config`); or set `BASE_URL=` explicitly |
 | `smoke.sh` stops in section 0: `token file does not exist`, or `token file is ... old` | The cron job is not syncing the token: cron is not running, or root cannot run `docker compose`. Run `sudo scripts/sync-token.sh` by hand and read what it says. After a `git pull`, make sure `.env` still has every required variable |
-| `smoke.sh` fails in section 0 at `cloudflared healthy` | The tunnel is enabled but not connected: `docker compose logs cloudflared` says why (a token that does not parse makes it exit and restart; a token Cloudflare does not accept, or no route to Cloudflare, leaves it running and not ready). The private entrance is not affected. See "Cloudflare Tunnel" |
+| `smoke.sh` fails in section 0 at `cloudflared healthy` | The tunnel is enabled but not connected: `docker compose logs cloudflared` says why (a token that does not parse makes it exit and restart; a token Cloudflare does not accept, or no route to Cloudflare, leaves it running and not ready). With `TUNNEL_PROTOCOL` unset or `auto`: `Register tunnel error` before each exit, and the container restarting, means QUIC is not getting through; set `TUNNEL_PROTOCOL=http2` in `.env` and run `docker compose up -d cloudflared`. `unknown protocol` before each exit: the value is not one of `auto`, `quic`, `http2`. The private entrance is not affected. See "Cloudflare Tunnel" |
 | The public hostname answers `502 Bad Gateway` or error `1033` | With the tunnel enabled: `docker compose ps cloudflared`. Not `healthy` means the tunnel is down (`docker compose logs cloudflared`). `healthy` means cloudflared cannot reach caddy, which then was not recreated when the tunnel was enabled and is missing from the tunnel network: `docker compose up -d`. Also check that the service of the public hostname is `http://caddy:8080` |
 | The public hostname shows the dsh-server login page, with no Cloudflare Access login before it | Nothing but the login gate is in front of the public hostname, so the login page is on the Internet. Add the Access application ("Cloudflare Tunnel", step 2) now; `scripts/smoke.sh` fails in section 11 until it is there |
 | Everyone through the tunnel is rate-limited together (`尝试过多`) | Cloudflare does not send `Cf-Connecting-Ip`, or rewrites it, so all tunnel visitors share one bucket: five wrong passwords per minute in total. Check the zone's Managed Transforms and its Pseudo IPv4 setting ("Cloudflare Tunnel", what to know) |
@@ -555,3 +562,4 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate runs as t
 | `COMPOSE_FILE` | Optional. `compose.yml:compose.tunnel.yml` enables the Cloudflare Tunnel (["Cloudflare Tunnel"](#cloudflare-tunnel)) | unset |
 | `TUNNEL_TOKEN` | With the tunnel: **Required.** The token of the tunnel (Cloudflare dashboard, Networking, Tunnels). A secret: whoever holds it can connect a server to the tunnel | - |
 | `TUNNEL_HOSTNAME` | With the tunnel: **Required.** The public hostname, for example `dsh.example.org` (no scheme, no path); the second authority dsh accepts. After changing it, run `docker compose up -d` | - |
+| `TUNNEL_PROTOCOL` | With the tunnel: optional. How cloudflared reaches Cloudflare: `auto` (QUIC first, HTTP/2 as the fallback), `quic` or `http2`. Set `http2` where UDP to Cloudflare is throttled. After changing it, run `docker compose up -d cloudflared` | `auto` |

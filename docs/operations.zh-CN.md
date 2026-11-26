@@ -261,8 +261,9 @@ caddy，所以 Cloudflare 面板里地址配错了也绕不过登录门。
    更深的名字需要 Cloudflare 默认不签发的证书）。Service URL 填 `http://caddy:8080`。
    `caddy` 是 compose 服务名，连接始终在 compose 网络内，所以是 HTTP 而不是 HTTPS。
 4. **在 `.env` 里启用。** 把 `.env.example` 中 *Cloudflare Tunnel* 那一段的三行抄进
-   `.env`，去掉注释并填好：`COMPOSE_FILE`、`TUNNEL_TOKEN`（第 1 步的 token）、
-   `TUNNEL_HOSTNAME`（第 3 步的公网主机名：只填主机名，不带协议和路径）。
+   `.env`，去掉注释并填好（那一段还有第四行 `TUNNEL_PROTOCOL`，是可选的）：
+   `COMPOSE_FILE`、`TUNNEL_TOKEN`（第 1 步的 token）、`TUNNEL_HOSTNAME`（第 3 步的
+   公网主机名：只填主机名，不带协议和路径）。
 5. **生效**，在部署目录里：
 
    ```sh
@@ -289,7 +290,7 @@ API 调用）。
 
 ### 关闭
 
-删掉 `.env` 里的 `COMPOSE_FILE` 那一行（那两个变量想删也可以），然后：
+删掉 `.env` 里的 `COMPOSE_FILE` 那一行（隧道的那几个变量想删也可以），然后：
 
 ```sh
 docker compose up -d --remove-orphans
@@ -313,6 +314,11 @@ Cloudflare 面板里删掉那条路由（隧道的 *Routes* 标签页），或�
 - 改了 `TUNNEL_HOSTNAME` 之后要 `docker compose up -d`。容器沿用创建时的环境变量，
   没重建的话冒烟测试会指出来。
 - 升级 cloudflared 版本后：`docker compose up -d cloudflared`，然后跑冒烟测试。
+- cloudflared 先用 QUIC（UDP）连 Cloudflare，连不上再回退到 HTTP/2（TCP），这就是它
+  的默认值 `auto`。到 Cloudflare 的 UDP 被限速的网络里，一次启动可能在回退之前就以
+  `Register tunnel error ... context deadline exceeded` 和退出码 1 结束，Docker 会重启
+  容器（在实测的那个网络上是第三次启动才连上）。这种网络下在 `.env` 里设
+  `TUNNEL_PROTOCOL=http2`，然后 `docker compose up -d cloudflared`：连接器一开始就走 TCP。
 - 经隧道进来的访客地址取自 `Cf-Connecting-Ip`。Cloudflare 侧如果有移除或改写这个
   头的功能开着（"Remove visitor IP headers"、Pseudo IPv4 的 "Overwrite Headers"
   模式），所有隧道访客会共用一个登录限流桶：每分钟一共 5 次错误密码。
@@ -412,7 +418,7 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate 以管理
 | `dsh-url.sh` 取不到 URL | 容器没起或日志轮转：`docker compose logs dsh` 直接看 |
 | `smoke.sh` 一上来就退出，说无法确定测试目标 | 当前目录没有有效的 `.env`（脚本从部署目录运行，目标由 `docker compose config` 解析）；或显式给 `BASE_URL=` |
 | `smoke.sh` 在 §0 停下：`token file does not exist` 或 `token file is … old` | cron 没在同步 token：cron 没运行，或者 root 跑不了 `docker compose`。手动跑 `sudo scripts/sync-token.sh` 看报错。`git pull` 之后还要确认 `.env` 里该有的必填变量都还在 |
-| `smoke.sh` 在 §0 的 `cloudflared healthy` 失败 | 隧道启用了但没连上：`docker compose logs cloudflared` 会说明原因（token 解析不了会直接退出再被拉起；token 不被 Cloudflare 接受、或到不了 Cloudflare，则进程在跑但一直不就绪）。私有入口不受影响。见「Cloudflare Tunnel」 |
+| `smoke.sh` 在 §0 的 `cloudflared healthy` 失败 | 隧道启用了但没连上：`docker compose logs cloudflared` 会说明原因（token 解析不了会直接退出再被拉起；token 不被 Cloudflare 接受、或到不了 Cloudflare，则进程在跑但一直不就绪）。`TUNNEL_PROTOCOL` 没设或是 `auto` 时，每次退出前都有 `Register tunnel error`、容器反复重启，说明 QUIC 过不去：在 `.env` 里设 `TUNNEL_PROTOCOL=http2`，再 `docker compose up -d cloudflared`。每次退出前是 `unknown protocol`：值不是 `auto`、`quic`、`http2` 之一。私有入口不受影响。见「Cloudflare Tunnel」 |
 | 公网主机名返回 `502 Bad Gateway` 或 1033 错误 | 隧道启用时：看 `docker compose ps cloudflared`。不是 `healthy` 说明隧道断了（`docker compose logs cloudflared`）。是 `healthy` 则说明 cloudflared 找不到 caddy——开启隧道时 caddy 没被重建，不在隧道网络里：`docker compose up -d`。再确认公网主机名的服务是 `http://caddy:8080` |
 | 公网主机名直接显示 dsh-server 的登录页，之前没有 Cloudflare Access 的登录 | 公网主机名前面只有登录门，等于登录页挂在了互联网上。立刻补上 Access 应用（「Cloudflare Tunnel」第 2 步）；补上之前 `scripts/smoke.sh` 的 §11 会失败 |
 | 走隧道的所有人被一起限流（`尝试过多`） | Cloudflare 没有发 `Cf-Connecting-Ip`，或者改写了它，于是所有隧道访客共用一个桶：每分钟一共 5 次错误密码。检查该域名的 Managed Transforms 和 Pseudo IPv4 设置（「Cloudflare Tunnel」之「需要知道的」） |
@@ -459,3 +465,4 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate 以管理
 | `COMPOSE_FILE` | 可选。`compose.yml:compose.tunnel.yml` 即启用 Cloudflare Tunnel（[「Cloudflare Tunnel」](#cloudflare-tunnel)） | 不设置 |
 | `TUNNEL_TOKEN` | 启用隧道时**必填**。隧道的 token（Cloudflare 面板的 Networking → Tunnels）。它是机密：拿到的人可以把自己的服务器接到这条隧道上 | - |
 | `TUNNEL_HOSTNAME` | 启用隧道时**必填**。公网主机名，例如 `dsh.example.org`（不带协议和路径）；dsh 接受的第二个受信主机。改了之后要 `docker compose up -d` | - |
+| `TUNNEL_PROTOCOL` | 启用隧道时可选。cloudflared 连 Cloudflare 的方式：`auto`（先 QUIC，回退到 HTTP/2）、`quic` 或 `http2`。到 Cloudflare 的 UDP 被限速时设为 `http2`。改了之后要 `docker compose up -d cloudflared` | `auto` |

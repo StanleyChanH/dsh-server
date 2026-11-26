@@ -10,7 +10,8 @@
 #   config      compose renders, the required variables are really required,
 #               the Caddyfile validates only with DSH_TRUSTED_HOST, each of
 #               its listeners hands the backends the right client address, and
-#               compose.tunnel.yml keeps cloudflared to its own network
+#               compose.tunnel.yml keeps cloudflared to its own network and
+#               hands it a protocol it accepts
 #   build       the auth-gate image builds (never with --pull)
 #   image       the dsh image builds and has what it should (about 3.4 GB and
 #               several minutes, so it is not part of the default run)
@@ -218,6 +219,27 @@ config() {
         return 1
     fi
     echo '   the tunnel override refuses to render without TUNNEL_TOKEN or TUNNEL_HOSTNAME'
+
+    # The protocol cloudflared speaks to Cloudflare's edge. auto is
+    # cloudflared's own default, but an empty value is not: it exits at once
+    # on "unknown protocol". So the default has to be spelled out.
+    protocol=$(unset TUNNEL_PROTOCOL; tunnel_json | jq -r '.services.cloudflared.environment.TUNNEL_TRANSPORT_PROTOCOL // empty')
+    if [ "$protocol" != auto ]; then
+        echo "compose.tunnel.yml hands cloudflared the protocol '${protocol}' without TUNNEL_PROTOCOL; expected auto, cloudflared's default (an empty value makes it exit at once)" >&2
+        return 1
+    fi
+    protocol=$(TUNNEL_PROTOCOL='' tunnel_json | jq -r '.services.cloudflared.environment.TUNNEL_TRANSPORT_PROTOCOL // empty')
+    if [ "$protocol" != auto ]; then
+        echo "compose.tunnel.yml hands cloudflared the protocol '${protocol}' for an empty TUNNEL_PROTOCOL; expected auto, cloudflared's default (an empty value makes it exit at once)" >&2
+        return 1
+    fi
+    echo '   compose.tunnel.yml leaves the protocol to cloudflared (auto) unless TUNNEL_PROTOCOL is set'
+    protocol=$(TUNNEL_PROTOCOL=http2 tunnel_json | jq -r '.services.cloudflared.environment.TUNNEL_TRANSPORT_PROTOCOL // empty')
+    if [ "$protocol" != http2 ]; then
+        echo "compose.tunnel.yml hands cloudflared the protocol '${protocol}' for TUNNEL_PROTOCOL=http2; it does not pass the variable on" >&2
+        return 1
+    fi
+    echo '   ...and passes TUNNEL_PROTOCOL on when it is set'
 
     routing "$caddy_image"
 }

@@ -167,7 +167,7 @@ Everything lives in `.env` (template: [`.env.example`](.env.example)). After cha
 | `LAN_PROXY` | Outbound proxy for the image build and for processes started inside dsh sessions. Empty disables it. | empty |
 | `NO_PROXY` | Addresses that bypass the proxy. | private ranges |
 | `GOPROXY` | Go module proxy for building auth-gate. | `https://goproxy.cn,direct` |
-| `COMPOSE_FILE`, `TUNNEL_TOKEN`, `TUNNEL_HOSTNAME` | Optional: enable the Cloudflare Tunnel ([how](docs/operations.md#cloudflare-tunnel)). | unset |
+| `COMPOSE_FILE`, `TUNNEL_TOKEN`, `TUNNEL_HOSTNAME`, `TUNNEL_PROTOCOL` | Optional: enable the Cloudflare Tunnel ([how](docs/operations.md#cloudflare-tunnel)); `TUNNEL_PROTOCOL` is `auto` unless UDP to Cloudflare is throttled, then `http2`. | unset (`TUNNEL_PROTOCOL`: `auto`) |
 
 ## Everyday commands
 

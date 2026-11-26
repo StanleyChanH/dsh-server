@@ -262,6 +262,10 @@ Noto Sans CJK SC / Noto Sans Mono CJK SC / Liberation Sans / Noto Color Emoji；
 7. **smoke §11** 检查启用之后可能出错的各个环节：dsh 是带着当前的 `TUNNEL_HOSTNAME`
    创建的并且认它（经隧道监听器取得会话、WebSocket 升级被接受）、限流在两个监听器
    上各按正确的地址计数、Access 挡在首页和登录端点两个路径前面。
+8. **协议默认交给 cloudflared，部署可以另行指定。** `auto` 先用 QUIC，回退到 HTTP/2。
+   `.env` 里的 `TUNNEL_PROTOCOL` 可以固定为 `quic` 或 `http2`，经
+   `TUNNEL_TRANSPORT_PROTOCOL` 传给 cloudflared。默认值明确写成 `auto`：留空并不等于
+   `auto`，cloudflared 遇到 "unknown protocol" 会直接退出。
 
 **实测且被依赖的事实**（Caddy 2.10.2、cloudflared 2026.11.2、Compose 5.5.0）：
 
@@ -275,7 +279,12 @@ Noto Sans CJK SC / Noto Sans Mono CJK SC / Liberation Sans / Noto Color Emoji；
 - token 解析不了时 cloudflared 立即退出（状态 255），完全没有网络时也是（状态 1）。
   token 格式合法但 Cloudflare 不接受时它在运行，`/ready` 答 503，并会被 Docker 不时
   重启。`cloudflared tunnel ready` 读 `TUNNEL_METRICS`：对答 200 的端点退出 0，否则
-  退出 1。这个版本没有 `--protocol` 参数。
+  退出 1。协议由 `TUNNEL_TRANSPORT_PROTOCOL` 设定（`auto`、`quic`、`http2`）；留空或
+  不认识的值会让它立即退出。
+- 到 Cloudflare 的 UDP 被限速的网络（在一个这样的网络上实测）：用 `auto` 时三次启动
+  有两次以 `Register tunnel error ... context deadline exceeded` 和退出码 1 结束，第三次
+  在 QUIC 超时后回退到 HTTP/2，之后四条 HTTP/2 连接保持无错。强制 `http2` 时三次启动
+  各在 6 到 8 秒内注册满四条连接。
 - dsh 的会话绑定在签发它的主机上：cookie 载荷里写着它，同一个 cookie 换个 `Host`
   出示，dsh 答 401。
 - dsh 与 auth-gate 都不读 `X-Forwarded-Proto`，两者的 cookie 无论如何都是 `Secure`，
@@ -283,7 +292,7 @@ Noto Sans CJK SC / Noto Sans Mono CJK SC / Liberation Sans / Noto Color Emoji；
 
 **验证**：`scripts/check.sh` 用 auth-gate 与 dsh 的替身运行 Caddyfile，断言两个监听
 器各自交给后端什么（两边都带伪造的头）；Caddyfile 的六种改坏方式都被报出。compose
-检查断言拓扑和两个必填变量；覆盖文件的六种改坏方式都被报出。entrypoint 的参数列表
+检查断言拓扑、两个必填变量和协议；覆盖文件的十种改坏方式都被报出。entrypoint 的参数列表
 在 dsh 镜像的基础镜像里检查，包括 `TUNNEL_HOSTNAME` 为空、以及不是裸主机名的值。
 单元测试钉住「空的 `X-Forwarded-For` 回退到对端地址」。在一个沙箱栈上（dsh 由当前
 代码树构建，不发布端口，独立的项目名和镜像 tag）：隧道关闭时，未改动的冒烟测试
@@ -291,6 +300,9 @@ Noto Sans CJK SC / Noto Sans Mono CJK SC / Liberation Sans / Noto Color Emoji；
 的原因失败，其中包括 dsh 运行旧的 entrypoint、以及 Caddyfile 计数了伪造的地址。
 entrypoint 把带协议的网址原样传给 dsh 时，dsh 崩溃循环、重建的 caddy 起不来；按提交
 的 entrypoint，dsh 正常运行，私有入口照常应答。没有涉及任何运行中的部署。
-**写作时尚未了结**：Cloudflare Access 对冒烟测试请求的应答是用替身比对的。第一次
-对着真实隧道运行，才能确定 `302` 这个模式对不对。运维手册里的菜单名取自 Cloudflare
-2026 年 11 月的文档，没有在面板里逐个点过。
+**2026-11-26 对着真实隧道核对过**（caddy 用替身，独占一个网络，没有涉及任何部署）：
+边缘对冒烟测试的未登录请求答 `302`，跳到 `https://<team>.cloudflareaccess.com/...`，
+正是冒烟测试期待的模式；真实 token 注册成功后 `cloudflared tunnel ready` 退出 0。
+**写作时尚未了结**：运维手册里的菜单名取自 Cloudflare 2026 年 11 月的文档，没有在
+面板里逐个点过；还没有见过通过了 Access 的请求到达 `caddy:8080`；冒烟测试的 §11 也
+还没有在带真实隧道的部署上跑过。

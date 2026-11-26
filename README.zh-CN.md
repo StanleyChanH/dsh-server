@@ -167,7 +167,7 @@ cd dsh-server
 | `LAN_PROXY` | 镜像构建与 dsh 会话内进程使用的出网代理。留空即关闭。 | 空 |
 | `NO_PROXY` | 不走代理的地址。 | 私有网段 |
 | `GOPROXY` | 构建 auth-gate 用的 Go 模块代理。 | `https://goproxy.cn,direct` |
-| `COMPOSE_FILE`、`TUNNEL_TOKEN`、`TUNNEL_HOSTNAME` | 可选：启用 Cloudflare Tunnel（[做法](docs/operations.zh-CN.md#cloudflare-tunnel)）。 | 不设置 |
+| `COMPOSE_FILE`、`TUNNEL_TOKEN`、`TUNNEL_HOSTNAME`、`TUNNEL_PROTOCOL` | 可选：启用 Cloudflare Tunnel（[做法](docs/operations.zh-CN.md#cloudflare-tunnel)）；`TUNNEL_PROTOCOL` 默认 `auto`，到 Cloudflare 的 UDP 被限速时设 `http2`。 | 不设置（`TUNNEL_PROTOCOL` 为 `auto`） |
 
 ## 日常命令
 
