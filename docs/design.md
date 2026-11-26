@@ -280,3 +280,83 @@ glyphs, and starting as root without `--no-sandbox` fails with a clear error. Th
 went from 2.19GB to 3.4GB (the chromium/fonts layer is 804MB, the gh layer 42MB). On
 2026-11-25 the container was moved to the new image and smoke sections 0 to 10 were all
 green, including the new dependency check.
+
+## Increment: public access through a Cloudflare Tunnel (2026-11-26, implemented)
+
+**Motivation**: members who are on neither the LAN nor the VPN could not reach the stack
+at all, and forwarding a port is ruled out by the security model: dsh runs whatever its
+users ask it to. A Cloudflare Tunnel opens no inbound port, and Cloudflare Access can sit
+in front of the public hostname. The login gate stays: Access answers "who may reach the
+server", the gate "which member is this", and dsh has its own session on top. Plan:
+`docs/superpowers/plans/2026-11-26-cloudflare-tunnel.md`.
+
+**Decisions**:
+
+1. **An override file, not a Compose profile**: `compose.tunnel.yml`, loaded through
+   `COMPOSE_FILE` in `.env`. A profile cannot make a missing variable fail: `${TUNNEL_TOKEN:?}`
+   inside a service under an inactive profile breaks every Compose command, and without it
+   a missing token only shows as a container that never connects. With the override, a
+   deployment that does not set `COMPOSE_FILE` renders exactly what it rendered before.
+2. **cloudflared on a network of its own, caddy on two**: cloudflared reaches caddy and
+   nothing else. A wrong service address in the Cloudflare dashboard (`dsh:3080`, say) is
+   not routable from there, so no dashboard mistake can skip the login gate.
+3. **A second caddy listener, `http://:8080`, not published, with the same route chain**:
+   the routes moved into a snippet that both listeners import, and the argument of the
+   snippet names what each proxy adds upstream. The listener exists whether or not the
+   tunnel is enabled: a site block whose address is an empty environment placeholder does
+   not adapt.
+4. **The client address comes from `Cf-Connecting-Ip` on the tunnel listener only**: that
+   `header_up` sits in a snippet the tunnel listener imports; the private listener imports
+   an empty one and keeps Caddy's default (the peer's address; a client-sent
+   `X-Forwarded-For` is discarded). Writing the default down as `header_up X-Forwarded-For
+   {remote_host}` would be the same thing, and Caddy warns that it is unnecessary. The
+   address has to be right on all three hops (`/auth/*`, `forward_auth`, dsh), because
+   auth-gate counts login failures by the first element of `X-Forwarded-For`. That header
+   itself cannot be used through Cloudflare: a request that already carries one has the
+   visitor's address appended, so its first element is whatever the visitor sent.
+5. **The public hostname is a second authority for dsh**: the entrypoint adds
+   `--trusted-host "$TUNNEL_HOSTNAME"` when the variable is set. dsh's fence refuses API
+   requests whose `Host` it was not told about, and through the tunnel the `Host` is the
+   public hostname.
+6. **Cloudflare Access is configured in the dashboard; the stack does not check the Access
+   JWT.** The gate and dsh's own session apply behind it. The smoke test fetches the
+   public hostname from the host and fails when the answer is not the redirect of Access.
+7. **Smoke section 11** checks what a deployment can get wrong after enabling it: dsh was
+   created with the current `TUNNEL_HOSTNAME` and serves it (a session is obtained through
+   the tunnel listener, and a WebSocket upgrade is accepted), the rate limit counts the
+   right address on each listener, and Access is in front of both the front page and the
+   login endpoint.
+
+**Measured, and relied upon** (Caddy 2.10.2, cloudflared 2026.11.2, Compose 5.5.0):
+
+- `header_up` takes no request matcher: `header_up @name X-Foo value` adapts without an
+  error and becomes a regular-expression replacement on a header named `@name`.
+- A site block without an address does not adapt: "server block without any key is global
+  configuration, and if used, it must be first".
+- `COMPOSE_FILE` is resolved against the directory a command is run from, and it is not
+  read with `--env-file`. `docker compose up -d --remove-orphans` removes the cloudflared
+  container and leaves the `<project>_tunnel` network behind.
+- cloudflared exits at once on a token that does not parse (status 255) and when it has no
+  network at all (status 1). With a well-formed token that Cloudflare does not accept it
+  runs, answers 503 on `/ready`, and is restarted by Docker from time to time.
+  `cloudflared tunnel ready` reads `TUNNEL_METRICS`; it exits 0 against an endpoint that
+  answers 200 and 1 otherwise. This version has no `--protocol` flag.
+- A dsh session is bound to the authority it was issued for: the cookie payload names it,
+  and dsh answers 401 to the same cookie presented with another `Host`.
+- Neither dsh nor auth-gate reads `X-Forwarded-Proto`, and both cookies are `Secure`
+  regardless, so the tunnel listener does not pass it on.
+
+**Verified**: `scripts/check.sh` runs the Caddyfile against a stand-in for auth-gate and
+dsh and asserts what each listener hands the backends, with forged headers on both; six
+mutations of the Caddyfile are each reported. The Compose checks assert the topology and
+the two required variables; six mutations of the override are each reported. The
+entrypoint's argument list is checked in the base image of the dsh image, also for an empty
+`TUNNEL_HOSTNAME`. A unit test pins that an empty `X-Forwarded-For` falls back to the
+peer. On a sandbox stack with a real dsh built from the tree (no published ports, a
+project and image tags of its own), the unchanged smoke test passed with the tunnel off;
+with stand-ins for cloudflared and Access, sections 0 to 11 passed, and each new check was
+also seen failing for its own reason, among them dsh running the previous entrypoint and a
+Caddyfile that counts a forged address. No running deployment was involved. **Open at the
+time of writing**: the answer of Cloudflare Access to the smoke test's request was matched
+against a stand-in. The first run against a real tunnel decides whether the `302` pattern
+is the right one, and whether the dashboard labels quoted in the runbook still apply.

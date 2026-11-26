@@ -1,8 +1,9 @@
 # dsh-server 运维手册
 
 dsh（DeepSeek Harness）agent 常驻服务：docker compose 三服务栈。成员在私有网络
-（局域网 / VPN）内用浏览器访问 `https://<DSH_TRUSTED_HOST>`——站点地址只在 `.env`
-的 `DSH_TRUSTED_HOST` 配一处；下文命令与示例一律用文档保留地址 `192.0.2.10`。
+（局域网 / VPN）内用浏览器访问 `https://<DSH_TRUSTED_HOST>`；也可以选配第二个、面向
+公网的入口 Cloudflare Tunnel（见下文「Cloudflare Tunnel」）。私有地址只在 `.env` 的
+`DSH_TRUSTED_HOST` 配一处；下文命令与示例一律用文档保留地址 `192.0.2.10`。
 
 项目概览与快速开始见 [README](../README.zh-CN.md)，设计取舍见
 [design.zh-CN.md](design.zh-CN.md)。
@@ -27,6 +28,9 @@ dsh（DeepSeek Harness）agent 常驻服务：docker compose 三服务栈。成�
   （挂 `/workspace`），容器 home 运行期状态在 `dsh-root/`（挂 `/root`，2026-11-23 起——
   npm 缓存、工作区 symlink、gh 认证等跨重建存活）。
 - dsh 与 auth-gate **不发布任何端口**，仅 compose 内网互通。
+- **cloudflared**（可选，`compose.tunnel.yml`）：Cloudflare Tunnel，一条到 Cloudflare
+  的出站连接。它独占一个 compose 网络，只到得了 caddy 的第二个监听器（`:8080`，
+  不发布），别的都到不了。见[「Cloudflare Tunnel」](#cloudflare-tunnel)。
 
 ## 构建前必读：镜像来源
 
@@ -142,6 +146,7 @@ docker compose down       # 停栈并删容器/内网（不动 ./dsh-home 等挂
 | `git pull` 之后 | `docker compose build && docker compose up -d`，然后 `scripts/smoke.sh` |
 | 改了 `.env` | `docker compose up -d`（地址或代理变了会重建 caddy 和 dsh；dsh 重启会打断正在运行的任务） |
 | 只改了 `caddy/Caddyfile` | `docker compose up -d --no-deps --force-recreate caddy` |
+| 开启或关闭 Cloudflare Tunnel | 和改 `.env` 一样：`docker compose up -d`，关闭时加 `--remove-orphans`。见[「Cloudflare Tunnel」](#cloudflare-tunnel) |
 
 `docker compose up -d` 只重建配置变了的容器，其余照常运行；
 `docker compose up -d --dry-run` 可以先看它会重建哪些。
@@ -226,6 +231,79 @@ tmp=$(mktemp) && jq --arg u '要删的名字' 'del(.[$u])' auth-gate/data/users.
 在会话期内一直有效。
 
 服务按 mtime 热重载，无需重启任何容器。
+
+## Cloudflare Tunnel
+
+这套栈是为私有网络设计的。给既不在局域网也不在 VPN 里的成员，有一个可选的第二
+入口：**Cloudflare Tunnel**，跑在独立的容器里（`compose.tunnel.yml`）。不启用就不
+存在。它不需要入站端口、公网 IP 或端口转发：`cloudflared` 主动连上 Cloudflare 并保
+持这条连接，Cloudflare 把请求顺着它送进来。Cloudflare Access 挡在公网主机名前面，
+决定谁能进；登录门在它后面照常生效。隧道容器独占一个 compose 网络，只到得了
+caddy，所以 Cloudflare 面板里地址配错了也绕不过登录门。
+
+需要一个 Cloudflare 账号，以及一个 DNS 托管在那里的域名。
+
+### 开启
+
+1. **建隧道。** Cloudflare Zero Trust → *Networks* → *Tunnels* → *Create a tunnel* →
+   *Cloudflared*，起个名字。复制 token：安装命令里那一长串（在 `--token` 之后，或
+   在 `service install` 之后）。
+2. **加公网主机名。** 在隧道里：*Public Hostname* → *Add a public hostname*。子域
+   和域名按成员要输入的填；服务类型 `HTTP`，URL `caddy:8080`。`caddy` 是 compose 服
+   务名，连接始终在 compose 网络内，所以是 HTTP 而不是 HTTPS。
+3. **用 Access 保护。** *Access* → *Applications* → *Add an application* →
+   *Self-hosted*。应用域名填公网主机名，路径留空（整个域名）。加一条动作为
+   *Allow* 的策略，写明谁可以用：邮箱地址，或身份提供方里的组。
+4. **在 `.env` 里启用。** 把 `.env.example` 中 *Cloudflare Tunnel* 那一段的三行抄进
+   `.env`，去掉注释并填好：`COMPOSE_FILE`、`TUNNEL_TOKEN`（第 1 步的 token）、
+   `TUNNEL_HOSTNAME`（第 2 步的公网主机名，不带协议和路径）。
+5. **生效**，在部署目录里：
+
+   ```sh
+   docker compose up -d
+   ```
+
+   这会启动 `cloudflared`，并重建 caddy（约 10 秒不可用）和 dsh（正在运行的 agent
+   任务会被打断）。连上之后 `docker compose ps` 里 `cloudflared` 是 `healthy`，通常
+   一分钟内；连不上的话约两分钟后是 `unhealthy`。
+6. **验证：**
+
+   ```sh
+   scripts/smoke.sh
+   ```
+
+   §11 检查隧道：dsh 是否认这个公网主机名、两个入口上登录限流各按哪个地址计数、
+   公网主机名是否在 Cloudflare Access 后面应答。
+
+### 关闭
+
+删掉 `.env` 里的 `COMPOSE_FILE` 那一行（那两个变量想删也可以），然后：
+
+```sh
+docker compose up -d --remove-orphans
+```
+
+它会删掉 `cloudflared` 容器，并重建不带隧道的 caddy 和 dsh。compose 网络
+`<project>_tunnel` 会留下，`docker network rm <project>_tunnel` 可以删掉它。之后在
+Cloudflare 面板里删掉那个公网主机名，或者整条隧道。
+
+### 需要知道的
+
+- **在部署目录里运行 `docker compose`。** `COMPOSE_FILE` 里是相对路径，compose 按
+  命令所在的目录解析；而且带了 `--env-file` 时它根本不会被读。这样的命令只作用于
+  基础栈。
+- `docker compose config` 会打印 `TUNNEL_TOKEN`，别把它的输出贴到任何地方。
+- 改了 `TUNNEL_HOSTNAME` 之后要 `docker compose up -d`。容器沿用创建时的环境变量，
+  没重建的话冒烟测试会指出来。
+- 升级 cloudflared 版本后：`docker compose up -d cloudflared`，然后跑冒烟测试。
+- 经隧道进来的访客地址取自 `Cf-Connecting-Ip`。Cloudflare 侧如果有移除或改写这个
+  头的功能开着（"Remove visitor IP headers"、Pseudo IPv4 的 "Overwrite Headers"
+  模式），所有隧道访客会共用一个登录限流桶：每分钟一共 5 次错误密码。
+- Cloudflare 会关闭 100 秒内源站没有任何数据的代理请求（它的 524 错误），所以 dsh
+  的流如果静默那么久，可能需要重连。
+- dsh 对外宣称的仍是 `DSH_PUBLIC_URL`，也就是私有地址。
+- dsh 的会话属于签发它的那个地址，所以私有主机名和公网主机名是两个会话。第二个
+  由自动换乘处理。
 
 ## 取 token URL
 
@@ -317,6 +395,11 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate 以管理
 | `dsh-url.sh` 取不到 URL | 容器没起或日志轮转：`docker compose logs dsh` 直接看 |
 | `smoke.sh` 一上来就退出，说无法确定测试目标 | 当前目录没有有效的 `.env`（脚本从部署目录运行，目标由 `docker compose config` 解析）；或显式给 `BASE_URL=` |
 | `smoke.sh` 在 §0 停下：`token file does not exist` 或 `token file is … old` | cron 没在同步 token：cron 没运行，或者 root 跑不了 `docker compose`。手动跑 `sudo scripts/sync-token.sh` 看报错。`git pull` 之后还要确认 `.env` 里该有的必填变量都还在 |
+| `smoke.sh` 在 §0 的 `cloudflared healthy` 失败 | 隧道启用了但没连上：`docker compose logs cloudflared` 会说明原因（token 解析不了会直接退出再被拉起；token 不被 Cloudflare 接受、或到不了 Cloudflare，则进程在跑但一直不就绪）。私有入口不受影响。见「Cloudflare Tunnel」 |
+| 公网主机名返回 `502 Bad Gateway` 或 1033 错误 | 隧道启用时：看 `docker compose ps cloudflared`。不是 `healthy` 说明隧道断了（`docker compose logs cloudflared`）。是 `healthy` 则说明 cloudflared 找不到 caddy——开启隧道时 caddy 没被重建，不在隧道网络里：`docker compose up -d`。再确认公网主机名的服务是 `http://caddy:8080` |
+| 公网主机名直接显示 dsh-server 的登录页，之前没有 Cloudflare Access 的登录 | 公网主机名前面只有登录门，等于登录页挂在了互联网上。立刻补上 Access 应用（「Cloudflare Tunnel」第 3 步）；补上之前 `scripts/smoke.sh` 的 §11 会失败 |
+| 走隧道的所有人被一起限流（`尝试过多`） | Cloudflare 没有发 `Cf-Connecting-Ip`，或者改写了它，于是所有隧道访客共用一个桶：每分钟一共 5 次错误密码。检查该域名的 Managed Transforms 和 Pseudo IPv4 设置（「Cloudflare Tunnel」之「需要知道的」） |
+| `smoke.sh` 的 §11 失败：`dsh was created with TUNNEL_HOSTNAME "..."` | `.env` 在 dsh 创建之后改过。容器沿用创建时的环境变量：`docker compose up -d` 会重建 dsh |
 | 忘了某成员密码 | `scripts/add-user.sh <名字>` 重设即 |
 | 构建失败提到 gcr.io | 误用了 `--pull`，或新机器没做镜像源预处理，见「构建前必读：镜像来源」 |
 
@@ -329,7 +412,9 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate 以管理
 - **全员共用同一个 dsh 实例**：会话、凭据、工作区在成员之间共享。登录门回答的
   是「谁能进」，不是「数据是谁的」。
 - token URL 长期存在于 `docker compose logs dsh`（敏感串，勿外发日志）。
-- 访问面 = 私有网络 + 登录门；不暴露公网，也别把 443 转发到公网。
+- 访问面 = 私有网络 + 登录门。不开 Cloudflare Tunnel 时它不暴露在公网，也别把 443
+  转发到公网。开了隧道后，公网主机名属于访问面：前面是 Cloudflare Access 和登录
+  门，而且 Access 必须一直在（缺了它 `scripts/smoke.sh` 会失败）。
 - **Docker 发布端口走 FORWARD/DOCKER 链，绕过 ufw 规则**：若启用 ufw 想收紧，
   必须显式写 `DOCKER-USER` 链规则，光 `ufw deny 443` 拦不住这套栈。
 
@@ -345,3 +430,6 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate 以管理
 | `NO_PROXY` | 代理豁免地址（内网/本地必须在内；healthcheck 另有 `--noproxy` 铁闸） | `localhost,127.0.0.1,…` |
 | `AUTH_SESSION_HOURS` | 登录会话时长（小时） | `720`（30 天） |
 | `GOPROXY` | 构建 auth-gate 时的 Go 模块代理 | `https://goproxy.cn,direct` |
+| `COMPOSE_FILE` | 可选。`compose.yml:compose.tunnel.yml` 即启用 Cloudflare Tunnel（[「Cloudflare Tunnel」](#cloudflare-tunnel)） | 不设置 |
+| `TUNNEL_TOKEN` | 启用隧道时**必填**。隧道的 token（Cloudflare Zero Trust 的 Networks → Tunnels）。它是机密：拿到的人可以把自己的服务器接到这条隧道上 | - |
+| `TUNNEL_HOSTNAME` | 启用隧道时**必填**。公网主机名，例如 `dsh.example.org`（不带协议和路径）；dsh 接受的第二个受信主机。改了之后要 `docker compose up -d` | - |

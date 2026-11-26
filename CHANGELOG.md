@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `scripts/check.sh` runs the same checks locally, in containers.
 - Community files: MIT license, contributing guide, security policy, code of conduct,
   issue and pull request templates.
+- An optional public entrance through a Cloudflare Tunnel: `compose.tunnel.yml` adds a
+  `cloudflared` container that reaches caddy only, caddy serves the same login-gated routes
+  on a second, unpublished listener, dsh accepts the public hostname, and the smoke test
+  checks the tunnel and that Cloudflare Access is in front of the public hostname.
 
 ### Changed
 

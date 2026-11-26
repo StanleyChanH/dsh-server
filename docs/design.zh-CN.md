@@ -217,3 +217,70 @@ Noto Sans CJK SC / Noto Sans Mono CJK SC / Liberation Sans / Noto Color Emoji；
 无头渲染「中文 + emoji + Latin」截图目检无缺字，不带 `--no-sandbox` 以 root 启动
 明确报错。镜像 2.19GB → 3.4GB（chromium/字体层 804MB，gh 层 42MB）。2026-11-25
 换容器后 smoke §0–§10 全绿（含新增的镜像依赖在位检查）。
+
+## 增量设计：经 Cloudflare Tunnel 的公网入口（2026-11-26，已实施）
+
+**动因**：既不在局域网也不在 VPN 里的成员完全够不着这套栈，而端口转发被安全模型
+排除在外——dsh 会执行用户让它做的任何事。Cloudflare Tunnel 不开入站端口，公网主机名
+前面可以放 Cloudflare Access。登录门保留：Access 回答「谁可以到达这台服务器」，登录
+门回答「这是哪位成员」，dsh 在最里面还有自己的会话。计划：
+`docs/superpowers/plans/2026-11-26-cloudflare-tunnel.md`。
+
+**裁定**：
+
+1. **用覆盖文件而不是 compose profile**：`compose.tunnel.yml`，经 `.env` 的
+   `COMPOSE_FILE` 加载。profile 做不到「缺变量就失败」：未激活的 profile 里有
+   `${TUNNEL_TOKEN:?}` 会让所有 compose 命令都报错；不加它，缺 token 又只表现为容器
+   永远连不上。用覆盖文件，不设 `COMPOSE_FILE` 的部署渲染结果与从前完全一样。
+2. **cloudflared 独占一个网络，caddy 接入两个**：cloudflared 只到得了 caddy。
+   Cloudflare 面板里地址配错了（比如 `dsh:3080`）从它那里不可达，所以面板配错也绕
+   不过登录门。
+3. **caddy 的第二个监听器 `http://:8080`，不发布，路由链相同**：路由抽成一个片段，
+   两个监听器都导入，片段的参数指定各代理向上游追加什么。无论隧道是否启用，这个
+   监听器都存在——地址是空环境占位符的站点块无法通过适配。
+4. **只在隧道监听器上从 `Cf-Connecting-Ip` 取客户端地址**：那条 `header_up` 放在
+   隧道监听器导入的片段里；私有监听器导入一个空片段，保持 Caddy 的默认行为（对端
+   地址；客户端自带的 `X-Forwarded-For` 被丢弃）。把默认行为写成
+   `header_up X-Forwarded-For {remote_host}` 是同一回事，Caddy 还会警告它多余。三个
+   跳（`/auth/*`、`forward_auth`、dsh）上的地址都必须正确，因为 auth-gate 按
+   `X-Forwarded-For` 的首段统计登录失败。经 Cloudflare 时不能直接用这个头：请求本来
+   就带着它的话，Cloudflare 是把访客地址**追加**在后面，首段是访客自己填的。
+5. **公网主机名是 dsh 的第二个受信主机**：变量有值时，entrypoint 追加
+   `--trusted-host "$TUNNEL_HOSTNAME"`。dsh 的来源校验会拒绝 `Host` 没被告知过的 API
+   请求，而经隧道进来的 `Host` 就是公网主机名。
+6. **Cloudflare Access 在面板里配置；栈本身不校验 Access 的 JWT。** 登录门和 dsh
+   自己的会话在它后面照常生效。冒烟测试从宿主机访问公网主机名，应答不是 Access 的
+   跳转就失败。
+7. **smoke §11** 检查启用之后可能出错的各个环节：dsh 是带着当前的 `TUNNEL_HOSTNAME`
+   创建的并且认它（经隧道监听器取得会话、WebSocket 升级被接受）、限流在两个监听器
+   上各按正确的地址计数、Access 挡在首页和登录端点两个路径前面。
+
+**实测且被依赖的事实**（Caddy 2.10.2、cloudflared 2026.11.2、Compose 5.5.0）：
+
+- `header_up` 不接受请求匹配器：`header_up @name X-Foo value` 适配不报错，实际变成
+  对名为 `@name` 的头做正则替换。
+- 没有地址的站点块无法适配：「server block without any key is global configuration,
+  and if used, it must be first」。
+- `COMPOSE_FILE` 按命令所在目录解析，带 `--env-file` 时不会被读。
+  `docker compose up -d --remove-orphans` 会删掉 cloudflared 容器，但留下
+  `<project>_tunnel` 网络。
+- token 解析不了时 cloudflared 立即退出（状态 255），完全没有网络时也是（状态 1）。
+  token 格式合法但 Cloudflare 不接受时它在运行，`/ready` 答 503，并会被 Docker 不时
+  重启。`cloudflared tunnel ready` 读 `TUNNEL_METRICS`：对答 200 的端点退出 0，否则
+  退出 1。这个版本没有 `--protocol` 参数。
+- dsh 的会话绑定在签发它的主机上：cookie 载荷里写着它，同一个 cookie 换个 `Host`
+  出示，dsh 答 401。
+- dsh 与 auth-gate 都不读 `X-Forwarded-Proto`，两者的 cookie 无论如何都是 `Secure`，
+  所以隧道监听器不转发它。
+
+**验证**：`scripts/check.sh` 用 auth-gate 与 dsh 的替身运行 Caddyfile，断言两个监听
+器各自交给后端什么（两边都带伪造的头）；Caddyfile 的六种改坏方式都被报出。compose
+检查断言拓扑和两个必填变量；覆盖文件的六种改坏方式都被报出。entrypoint 的参数列表
+在 dsh 镜像的基础镜像里检查，包括 `TUNNEL_HOSTNAME` 为空的情况。单元测试钉住「空的
+`X-Forwarded-For` 回退到对端地址」。在一个沙箱栈上（dsh 由当前代码树构建，不发布端口，
+独立的项目名和镜像 tag）：隧道关闭时，未改动的冒烟测试通过；换上 cloudflared 与
+Access 的替身后 §0–§11 通过，并且每项新检查都见过因各自的原因失败，其中包括 dsh
+运行旧的 entrypoint、以及 Caddyfile 计数了伪造的地址。没有涉及任何运行中的部署。
+**写作时尚未了结**：Cloudflare Access 对冒烟测试请求的应答是用替身比对的。第一次
+对着真实隧道运行，才能确定 `302` 这个模式对不对，以及运维手册里引用的面板文案是否
+仍然适用。

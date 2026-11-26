@@ -44,9 +44,9 @@ The groups are:
 | Group | What it runs |
 | --- | --- |
 | `go` | `gofmt -l`, `go vet`, `go test` for auth-gate, in `golang:1.24-alpine` |
-| `shell` | ShellCheck on `scripts/*.sh` and `dsh/entrypoint.sh` |
+| `shell` | ShellCheck on `scripts/*.sh` and `dsh/entrypoint.sh`, and the arguments the dsh entrypoint hands to dsh |
 | `dockerfile` | hadolint on both Dockerfiles, with `.hadolint.yaml` |
-| `config` | compose renders with the template values, the required variables are really required, and the Caddyfile validates with `DSH_TRUSTED_HOST` and fails without it |
+| `config` | compose renders with the template values, the required variables are really required, the Caddyfile validates with `DSH_TRUSTED_HOST` and fails without it, each of its listeners hands the backends the right client address, and `compose.tunnel.yml` keeps cloudflared to its own network |
 | `build` | the auth-gate image builds (never with `--pull`) |
 
 CI additionally runs `go test -race` on a host with a C toolchain.
@@ -78,6 +78,9 @@ including one dsh restart:
 ```sh
 scripts/smoke.sh
 ```
+
+With the Cloudflare Tunnel enabled, the smoke test also fetches the public hostname from
+the host (section 11), so it needs a route to Cloudflare from there.
 
 Do that on a test host or a virtual machine, not on a stack other people depend on, and
 put the tail of its output in your pull request.
@@ -128,6 +131,9 @@ reworked together with the planned login-page redesign.
   the same change. Any other dependency bump that needs a newer Go works the same way.
 - **pnpm, gh, mnemon** in `dsh/Dockerfile`: pinned on purpose. For gh, change `GH_VERSION`
   and the sha256 together.
+- **cloudflared** in `compose.tunnel.yml`: pinned on purpose. To bump it, change the tag,
+  run `docker compose up -d cloudflared` on a deployment with the tunnel enabled, and run
+  the smoke test.
 
 ## License
 
