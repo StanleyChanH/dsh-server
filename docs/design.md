@@ -383,11 +383,13 @@ also seen failing for its own reason, among them dsh running the previous entryp
 Caddyfile that counts a forged address. With the entrypoint passing a pasted URL on, dsh
 crash-looped and a recreated caddy never started; with the entrypoint as committed, dsh
 runs and the private entrance answers. No running deployment was involved.
-**Checked against a real tunnel on 2026-11-26**, with a stand-in for caddy on a network of
-its own and no deployment involved: the edge answers the smoke test's unauthenticated
+**Checked against real tunnels on 2026-11-26.** With a stand-in for caddy on a network of
+its own, and no deployment involved: the edge answers the smoke test's unauthenticated
 request with `302` to `https://<team>.cloudflareaccess.com/...`, the pattern the smoke
 test expects, and `cloudflared tunnel ready` exits 0 once a real token is registered.
-**Open at the time of writing**: the runbook's menu names follow Cloudflare's
-documentation of November 2026 and have not been clicked through in a dashboard; a request
-that passed Access has not yet been seen reaching `caddy:8080`; and the smoke test's
-section 11 has not yet run against a deployment with a real tunnel.
+Then on the first deployment to enable it, with `TUNNEL_PROTOCOL=http2` on the network
+measured above: the smoke test's sections 0 to 11 passed, the connector's log carried the
+route the dashboard had configured, and the operator signed in through Cloudflare Access
+and reached the service from a browser. **Still open**: the runbook's menu names follow
+Cloudflare's documentation of November 2026 and were not compared with the dashboard click
+for click.

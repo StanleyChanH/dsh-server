@@ -253,9 +253,11 @@ caddy，所以 Cloudflare 面板里地址配错了也绕不过登录门。
 2. **先用 Access 保护这个主机名**，要在路由存在之前：路由一建出来就对互联网开放。
    *Zero Trust* → *Access controls* → *Applications* → *Create new application* →
    *Self-hosted and private* → *Add public hostname*。域名填成员要输入的主机名，路
-   径留空（整个域名）。加一条动作为 *Allow* 的策略，写明谁可以用：邮箱地址，或身份
-   提供方里的组。账号里还没有登录方式的话，先加 *One-time PIN*（*Zero Trust* →
-   *Integrations* → *Identity providers*）：邮件验证码。
+   径留空（整个域名）。加一条动作为 *Allow* 的策略，写明谁可以用。新建的 Zero Trust
+   组织默认让访客「用 Cloudflare 账号登录」：给本账户成员的策略用 *Cloudflare Account
+   Member* 选择器把他们包进来，没有策略匹配到的访客会停在 "That account does not have
+   access"。其他人则加 *One-time PIN* 登录方式（*Zero Trust* → *Integrations* →
+   *Identity providers*，邮件验证码），并把他们的邮箱列进策略。
 3. **加路由。** *Networking* → *Tunnels* → 这条隧道 → *Routes* 标签页 → *Add route*
    → *Published application*。子域和域名同第 2 步：域名下只有一级（`dsh.example.org`；
    更深的名字需要 Cloudflare 默认不签发的证书）。Service URL 填 `http://caddy:8080`。
@@ -421,6 +423,7 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate 以管理
 | `smoke.sh` 在 §0 的 `cloudflared healthy` 失败 | 隧道启用了但没连上：`docker compose logs cloudflared` 会说明原因（token 解析不了会直接退出再被拉起；token 不被 Cloudflare 接受、或到不了 Cloudflare，则进程在跑但一直不就绪）。`TUNNEL_PROTOCOL` 没设或是 `auto` 时，每次退出前都有 `Register tunnel error`、容器反复重启，说明 QUIC 过不去：在 `.env` 里设 `TUNNEL_PROTOCOL=http2`，再 `docker compose up -d cloudflared`。每次退出前是 `unknown protocol`：值不是 `auto`、`quic`、`http2` 之一。私有入口不受影响。见「Cloudflare Tunnel」 |
 | 公网主机名返回 `502 Bad Gateway` 或 1033 错误 | 隧道启用时：看 `docker compose ps cloudflared`。不是 `healthy` 说明隧道断了（`docker compose logs cloudflared`）。是 `healthy` 则说明 cloudflared 找不到 caddy——开启隧道时 caddy 没被重建，不在隧道网络里：`docker compose up -d`。再确认公网主机名的服务是 `http://caddy:8080` |
 | 公网主机名直接显示 dsh-server 的登录页，之前没有 Cloudflare Access 的登录 | 公网主机名前面只有登录门，等于登录页挂在了互联网上。立刻补上 Access 应用（「Cloudflare Tunnel」第 2 步）；补上之前 `scripts/smoke.sh` 的 §11 会失败 |
+| 通过 Cloudflare 登录后，页面显示 "That account does not have access" | Access 应用的 Allow 策略没有匹配到这个访客。用「Cloudflare 账号登录」（新建 Zero Trust 组织的默认登录方式）时，用 *Cloudflare Account Member* 选择器把账户成员包进来；其他人加 *One-time PIN* 登录方式，并把他们的邮箱列进策略（「Cloudflare Tunnel」第 2 步） |
 | 走隧道的所有人被一起限流（`尝试过多`） | Cloudflare 没有发 `Cf-Connecting-Ip`，或者改写了它，于是所有隧道访客共用一个桶：每分钟一共 5 次错误密码。检查该域名的 Managed Transforms 和 Pseudo IPv4 设置（「Cloudflare Tunnel」之「需要知道的」） |
 | `smoke.sh` 的 §11 失败：`dsh was created with TUNNEL_HOSTNAME "..."` | `.env` 在 dsh 创建之后改过。容器沿用创建时的环境变量：`docker compose up -d` 会重建 dsh |
 | `smoke.sh` 的 §11 失败：`dsh was not started with TUNNEL_HOSTNAME "..."` | 两种情况之一：`.env` 的 `TUNNEL_HOSTNAME` 里不止主机名（带了协议或路径），entrypoint 没把它传给 dsh，`docker compose logs dsh` 里有说明——改成只填主机名，然后 `docker compose up -d`；或者 dsh 镜像比隧道这个选项还旧、它的 entrypoint 不认识这个变量——`docker compose build dsh && docker compose up -d` |

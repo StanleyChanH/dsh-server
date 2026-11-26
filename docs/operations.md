@@ -312,10 +312,12 @@ menus from time to time.
    Internet from the moment it is created. *Zero Trust* -> *Access controls* ->
    *Applications* -> *Create new application* -> *Self-hosted and private* -> *Add public
    hostname*. The domain is the hostname members will type, with the path left empty (the
-   whole domain). Add a policy with the action *Allow* that names who may use it: mail
-   addresses, or a group from your identity provider. If the account has no login method
-   yet, add *One-time PIN* first (*Zero Trust* -> *Integrations* -> *Identity providers*):
-   a code sent by mail.
+   whole domain). Add a policy with the action *Allow* that names who may use it. A new
+   Zero Trust organization signs visitors in *with Cloudflare*: a policy for members of
+   that account includes them with the *Cloudflare Account Member* selector, and a visitor
+   whom no policy matches is told "That account does not have access". For anyone else, add
+   *One-time PIN* as a login method (*Zero Trust* -> *Integrations* -> *Identity
+   providers*), a code sent by mail, and list their mail addresses.
 3. **Add the route.** *Networking* -> *Tunnels* -> the tunnel -> *Routes* tab -> *Add
    route* -> *Published application*. Subdomain and domain as in step 2: one level below
    the domain (`dsh.example.org`; a deeper name needs a certificate Cloudflare does not
@@ -510,6 +512,7 @@ sudo chown -R 1000:1000 auth-gate/data/                    # auth-gate runs as t
 | `smoke.sh` fails in section 0 at `cloudflared healthy` | The tunnel is enabled but not connected: `docker compose logs cloudflared` says why (a token that does not parse makes it exit and restart; a token Cloudflare does not accept, or no route to Cloudflare, leaves it running and not ready). With `TUNNEL_PROTOCOL` unset or `auto`: `Register tunnel error` before each exit, and the container restarting, means QUIC is not getting through; set `TUNNEL_PROTOCOL=http2` in `.env` and run `docker compose up -d cloudflared`. `unknown protocol` before each exit: the value is not one of `auto`, `quic`, `http2`. The private entrance is not affected. See "Cloudflare Tunnel" |
 | The public hostname answers `502 Bad Gateway` or error `1033` | With the tunnel enabled: `docker compose ps cloudflared`. Not `healthy` means the tunnel is down (`docker compose logs cloudflared`). `healthy` means cloudflared cannot reach caddy, which then was not recreated when the tunnel was enabled and is missing from the tunnel network: `docker compose up -d`. Also check that the service of the public hostname is `http://caddy:8080` |
 | The public hostname shows the dsh-server login page, with no Cloudflare Access login before it | Nothing but the login gate is in front of the public hostname, so the login page is on the Internet. Add the Access application ("Cloudflare Tunnel", step 2) now; `scripts/smoke.sh` fails in section 11 until it is there |
+| After Cloudflare's login, the page says "That account does not have access" | No Allow policy of the Access application matches the visitor. With *Sign in with Cloudflare* (the default login method of a new Zero Trust organization) include members of the account with the *Cloudflare Account Member* selector; for anyone else add the *One-time PIN* login method and list their mail addresses ("Cloudflare Tunnel", step 2) |
 | Everyone through the tunnel is rate-limited together (`尝试过多`) | Cloudflare does not send `Cf-Connecting-Ip`, or rewrites it, so all tunnel visitors share one bucket: five wrong passwords per minute in total. Check the zone's Managed Transforms and its Pseudo IPv4 setting ("Cloudflare Tunnel", what to know) |
 | `smoke.sh` fails in section 11: `dsh was created with TUNNEL_HOSTNAME "..."` | `.env` was changed after dsh was created. A container keeps the environment it was created with: `docker compose up -d` recreates dsh |
 | `smoke.sh` fails in section 11: `dsh was not started with TUNNEL_HOSTNAME "..."` | Either `.env` carries more than the host name in `TUNNEL_HOSTNAME` (a scheme, a path): the entrypoint left it out, and `docker compose logs dsh` says so. Put only the host name there and run `docker compose up -d`. Or the dsh image is older than the tunnel option and its entrypoint does not know the variable: `docker compose build dsh && docker compose up -d` |

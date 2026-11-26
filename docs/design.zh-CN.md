@@ -300,9 +300,10 @@ Noto Sans CJK SC / Noto Sans Mono CJK SC / Liberation Sans / Noto Color Emoji；
 的原因失败，其中包括 dsh 运行旧的 entrypoint、以及 Caddyfile 计数了伪造的地址。
 entrypoint 把带协议的网址原样传给 dsh 时，dsh 崩溃循环、重建的 caddy 起不来；按提交
 的 entrypoint，dsh 正常运行，私有入口照常应答。没有涉及任何运行中的部署。
-**2026-11-26 对着真实隧道核对过**（caddy 用替身，独占一个网络，没有涉及任何部署）：
+**2026-11-26 对着真实隧道核对过。** 先是 caddy 用替身、独占一个网络、不涉及任何部署：
 边缘对冒烟测试的未登录请求答 `302`，跳到 `https://<team>.cloudflareaccess.com/...`，
 正是冒烟测试期待的模式；真实 token 注册成功后 `cloudflared tunnel ready` 退出 0。
-**写作时尚未了结**：运维手册里的菜单名取自 Cloudflare 2026 年 11 月的文档，没有在
-面板里逐个点过；还没有见过通过了 Access 的请求到达 `caddy:8080`；冒烟测试的 §11 也
-还没有在带真实隧道的部署上跑过。
+随后在第一个启用它的部署上（在上述实测的那个网络上，`TUNNEL_PROTOCOL=http2`）：冒烟
+测试 §0–§11 通过，连接器日志里带着面板配好的路由，运维者经 Cloudflare Access 登录后
+在浏览器里到达了服务。**仍未了结**：运维手册里的菜单名取自 Cloudflare 2026 年 11 月的
+文档，没有和面板逐个对照过。
