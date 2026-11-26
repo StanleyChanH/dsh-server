@@ -1,5 +1,7 @@
-# Public entry point of the dsh-server stack: HTTPS on 443, plus the 80 -> 443
-# redirect that Caddy adds on its own. Reachable on a private network only.
+# Public entry points of the dsh-server stack: HTTPS on 443, plus the 80 -> 443
+# redirect that Caddy adds on its own. Both are reachable on a private network
+# only. The listener of a Cloudflare Tunnel, when one is added, is at the end
+# of this file.
 #
 # The site address is an environment placeholder, so the whole stack takes its
 # host from one place: DSH_TRUSTED_HOST in .env (compose.yml passes it into
@@ -24,9 +26,15 @@
 	default_sni {$DSH_TRUSTED_HOST}
 }
 
-https://{$DSH_TRUSTED_HOST} {
-	tls internal
-
+# Everything behind the login gate, for one listener. The argument names a
+# snippet that every proxy in the chain imports, so a listener can add to what
+# the proxies send upstream; nothing else differs between listeners.
+#
+# auth-gate takes the client address, for the login rate limit, from the first
+# element of X-Forwarded-For. That is why the address has to be right on all
+# three hops below, not only on the way to dsh: the login request itself goes
+# through the first one.
+(routes) {
 	# No `encode` anywhere, on purpose: dsh answers with SSE and WebSocket
 	# streams, and compressing them buffers the stream and breaks real-time
 	# delivery. Caddy does not enable encoding by default; this note is here so
@@ -35,7 +43,9 @@ https://{$DSH_TRUSTED_HOST} {
 	# Login-gate endpoints go straight to auth-gate. Its handlers already live
 	# at /auth/login, /auth/check and /auth/ping, so no prefix is stripped.
 	handle /auth/* {
-		reverse_proxy auth-gate:8080
+		reverse_proxy auth-gate:8080 {
+			import {args[0]}
+		}
 	}
 
 	# Everything else passes auth-gate's forward_auth check first. A GET
@@ -46,6 +56,7 @@ https://{$DSH_TRUSTED_HOST} {
 	handle {
 		forward_auth auth-gate:8080 {
 			uri /auth/check
+			import {args[0]}
 		}
 		# Automatic sign-in: dsh answers 401 to every request that carries no
 		# valid token or cookie (and a browser does not navigate on 401), so the
@@ -56,6 +67,7 @@ https://{$DSH_TRUSTED_HOST} {
 		# host cron job running scripts/sync-token.sh. Responses that are not
 		# 401 pass through untouched, including SSE and WebSocket.
 		reverse_proxy dsh:3080 {
+			import {args[0]}
 			@dsh_unauth status 401
 			handle_response @dsh_unauth {
 				# A `redir` whose first argument starts with "/" is parsed as a
@@ -66,4 +78,41 @@ https://{$DSH_TRUSTED_HOST} {
 			}
 		}
 	}
+}
+
+# Client address on the private network: the peer of the connection. For a
+# connection that does not come from a trusted proxy, the reverse proxy throws
+# away any X-Forwarded-For the client sent and writes the peer's address
+# there, which is exactly what this listener needs, so there is nothing to
+# add. (Writing it down as `header_up X-Forwarded-For {remote_host}` would
+# say the same thing; Caddy logs a warning that it is unnecessary.)
+(xff_peer) {
+}
+
+# Client address on the tunnel: Cloudflare's edge adds Cf-Connecting-Ip, the
+# visitor's address, to every request it forwards. X-Forwarded-For is not
+# used: when a request already carries one, Cloudflare appends the visitor's
+# address to it, so its first element is whatever the visitor chose to send.
+(xff_cloudflare) {
+	header_up X-Forwarded-For {http.request.header.Cf-Connecting-Ip}
+}
+
+https://{$DSH_TRUSTED_HOST} {
+	tls internal
+	import routes xff_peer
+}
+
+# Cloudflare Tunnel (compose.tunnel.yml: a cloudflared container, on its own
+# Compose network). This listener is the only thing that container can reach;
+# the public hostname in the Cloudflare dashboard has to point to
+# http://caddy:8080. It is not published, so on this host only containers on
+# the Compose networks can reach it, and the login gate applies exactly as on
+# the private listener.
+#
+# The Host header is the public hostname and is passed on to dsh, which has to
+# trust it (TUNNEL_HOSTNAME in .env). A request that arrives without
+# Cf-Connecting-Ip reaches the backends with an empty X-Forwarded-For;
+# auth-gate then counts all such requests as one client.
+http://:8080 {
+	import routes xff_cloudflare
 }

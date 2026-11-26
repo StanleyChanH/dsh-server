@@ -7,7 +7,8 @@
 #   shell       ShellCheck on scripts/*.sh and dsh/entrypoint.sh
 #   dockerfile  hadolint on both Dockerfiles, with .hadolint.yaml
 #   config      compose renders, the required variables are really required,
-#               and the Caddyfile validates only with DSH_TRUSTED_HOST
+#               the Caddyfile validates only with DSH_TRUSTED_HOST, and each
+#               of its listeners hands the backends the right client address
 #   build       the auth-gate image builds (never with --pull)
 #   image       the dsh image builds and has what it should (about 3.4 GB and
 #               several minutes, so it is not part of the default run)
@@ -107,7 +108,96 @@ config() {
         return 1
     fi
     echo '   the Caddyfile does not validate without it'
+
+    # Warnings from the adapter are defects here: it warns about a header_up
+    # that repeats the reverse proxy's default, and the Caddyfile is written
+    # so that it has none.
+    n=$(caddy_validate -e DSH_TRUSTED_HOST="$host" 2>&1 | grep -c 'Unnecessary header_up' || true)
+    if [ "$n" -gt 0 ]; then
+        echo 'the Caddyfile has a header_up that repeats the reverse proxy default' >&2
+        return 1
+    fi
+    echo '   the Caddyfile adapts without warnings'
+
+    routing "$caddy_image"
 }
+
+# What each Caddyfile listener tells the backends about the client. The real
+# Caddyfile runs in the caddy image, with one stand-in for auth-gate and dsh
+# that answers every request with the X-Forwarded-For it received; it refuses
+# /auth/check with 401 (a missing session) unless the request carries
+# "X-Probe: pass", which lets it through to the "dsh" answer. Nothing is
+# published: the probes go to the container addresses.
+#   :443, the private listener: the client address is the peer's, whatever the
+#     client sent in X-Forwarded-For or Cf-Connecting-Ip.
+#   :8080, the Cloudflare Tunnel listener: the client address is
+#     Cf-Connecting-Ip, whatever the client sent in X-Forwarded-For.
+routing() (
+    local image=$1 p="dsh-server-check-$$" conf lan tun peer got i
+    conf=$(mktemp)
+    printf '%s\n' \
+        ':8080, :3080 {' \
+        '	@pass {' \
+        '		path /auth/check' \
+        '		header X-Probe pass' \
+        '	}' \
+        '	respond @pass "ok" 200' \
+        '	respond /auth/check "xff={http.request.header.x-forwarded-for}" 401' \
+        '	respond "xff={http.request.header.x-forwarded-for} host={http.request.host}" 200' \
+        '}' > "$conf"
+    trap 'docker rm -f "$p-front" "$p-echo" >/dev/null 2>&1; docker network rm "$p-lan" "$p-tun" >/dev/null 2>&1; rm -f "$conf"' EXIT
+    docker network create "$p-lan" >/dev/null
+    docker network create "$p-tun" >/dev/null
+    docker run -d --name "$p-echo" --network "$p-lan" --network-alias auth-gate --network-alias dsh \
+        -v "$conf:/etc/caddy/Caddyfile:ro" "$image" >/dev/null
+    docker run -d --name "$p-front" --network "$p-lan" -v "$PWD/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+        -e DSH_TRUSTED_HOST=dsh.test "$image" >/dev/null
+    docker network connect "$p-tun" "$p-front"
+    lan=$(docker inspect -f "{{with index .NetworkSettings.Networks \"$p-lan\"}}{{.IPAddress}}{{end}}" "$p-front")
+    tun=$(docker inspect -f "{{with index .NetworkSettings.Networks \"$p-tun\"}}{{.IPAddress}}{{end}}" "$p-front")
+    # The probes come from the host, so the peer the private listener sees is
+    # the gateway of the stand-in network.
+    peer=$(docker network inspect -f '{{(index .IPAM.Config 0).Gateway}}' "$p-lan")
+
+    q() { curl -s --noproxy '*' --max-time 5 "$@"; }
+    # expect <probe> <want> <got>
+    expect() {
+        if [ "$2" != "$3" ]; then
+            echo "routing: $1: want '$2', got '$3'" >&2
+            exit 1
+        fi
+    }
+    forge=(-H 'X-Forwarded-For: 6.6.6.6' -H 'Cf-Connecting-Ip: 6.6.6.6')
+    site=(--resolve "dsh.test:443:$lan")
+    # Caddy needs a moment to issue its certificate before the first answer.
+    i=0
+    while :; do
+        got=$(q -sk "${site[@]}" "${forge[@]}" https://dsh.test/auth/login || true)
+        [ "$got" != "" ] && break
+        i=$((i + 1))
+        [ "$i" -lt 20 ] || { echo 'routing: the caddy container did not answer on :443 within 10 seconds' >&2; exit 1; }
+        sleep 0.5
+    done
+    expect 'private listener, /auth/login' "xff=$peer host=dsh.test" "$got"
+    got=$(q -sk "${site[@]}" "${forge[@]}" https://dsh.test/x || true)
+    expect 'private listener, stopped by the gate' "xff=$peer" "$got"
+    got=$(q -sk "${site[@]}" "${forge[@]}" -H 'X-Probe: pass' https://dsh.test/x || true)
+    expect 'private listener, through to dsh' "xff=$peer host=dsh.test" "$got"
+    got=$(q -o /dev/null -w '%{http_code} %{redirect_url}' -H 'Host: dsh.test' "http://$lan/x" || true)
+    expect 'port 80 redirects to https' '308 https://dsh.test/x' "$got"
+    echo '   private listener: the client address is the peer on every hop, whatever the client sent; port 80 still redirects'
+
+    visitor=(-H 'Host: dsh.example.org' -H 'Cf-Connecting-Ip: 203.0.113.9' -H 'X-Forwarded-For: 1.1.1.1')
+    got=$(q "${visitor[@]}" "http://$tun:8080/auth/login" || true)
+    expect 'tunnel listener, /auth/login' 'xff=203.0.113.9 host=dsh.example.org' "$got"
+    got=$(q "${visitor[@]}" "http://$tun:8080/x" || true)
+    expect 'tunnel listener, stopped by the gate' 'xff=203.0.113.9' "$got"
+    got=$(q "${visitor[@]}" -H 'X-Probe: pass' "http://$tun:8080/x" || true)
+    expect 'tunnel listener, through to dsh' 'xff=203.0.113.9 host=dsh.example.org' "$got"
+    got=$(q -H 'Host: dsh.example.org' -H 'X-Forwarded-For: 1.1.1.1' -H 'X-Probe: pass' "http://$tun:8080/x" || true)
+    expect 'tunnel listener without Cf-Connecting-Ip' 'xff= host=dsh.example.org' "$got"
+    echo '   tunnel listener: the client address is Cf-Connecting-Ip on every hop, whatever the client sent in X-Forwarded-For'
+)
 
 # image_labels_ok <image> : the OCI source label is present.
 image_labels_ok() {
