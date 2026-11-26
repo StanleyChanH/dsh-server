@@ -51,8 +51,10 @@ shell() {
     docker run --rm -v "$PWD:/mnt:ro" koalaman/shellcheck:v0.11.0 -x scripts/*.sh dsh/entrypoint.sh
 
     # What the dsh image's entrypoint hands to dsh, one argument per line,
-    # from a stand-in dsh. The address after --host is the container's own and
-    # differs per run, so that value is dropped.
+    # from a stand-in dsh, followed by the exit status and by how many lines
+    # the entrypoint wrote to stderr naming TUNNEL_HOSTNAME. The address
+    # after --host is the container's own and differs per run, so that value
+    # is dropped.
     entrypoint_args() {
         local base
         base=$(sed -n 's/^FROM \([^ ]*\)$/\1/p' dsh/Dockerfile | head -1)
@@ -61,7 +63,9 @@ shell() {
                 mkdir /fake
                 printf "#!/bin/sh\nprintf \"%%s\\n\" \"\$@\"\n" > /fake/dsh
                 chmod +x /fake/dsh
-                PATH="/fake:$PATH" exec /entrypoint.sh' \
+                PATH="/fake:$PATH" /entrypoint.sh 2>/tmp/err
+                echo "exit=$?"
+                echo "stderr lines naming TUNNEL_HOSTNAME: $(grep -c TUNNEL_HOSTNAME /tmp/err)"' \
             | awk 'drop { drop = 0; next } $0 == "--host" { drop = 1 } { print }'
     }
     # hands <case> <want> <got>
@@ -72,17 +76,38 @@ shell() {
             return 1
         fi
     }
-    want="$(printf '%s\n' web --no-open --host --port 3080 --public-url https://192.0.2.10/ --trusted-host 192.0.2.10)"
+    plain="$(printf '%s\n' web --no-open --host --port 3080 --public-url https://192.0.2.10/ --trusted-host 192.0.2.10)"
+    quiet="$(printf '%s\n' 'exit=0' 'stderr lines naming TUNNEL_HOSTNAME: 0')"
     got=$(entrypoint_args) || { echo 'cannot run the dsh entrypoint in its base image' >&2; return 1; }
-    hands 'TUNNEL_HOSTNAME not set' "$want" "$got"
+    hands 'TUNNEL_HOSTNAME not set' "$plain
+$quiet" "$got"
     got=$(entrypoint_args -e TUNNEL_HOSTNAME=) || { echo 'cannot run the dsh entrypoint in its base image' >&2; return 1; }
-    hands 'TUNNEL_HOSTNAME empty' "$want" "$got"
+    hands 'TUNNEL_HOSTNAME empty' "$plain
+$quiet" "$got"
     echo '   the dsh entrypoint hands dsh the expected arguments, also when TUNNEL_HOSTNAME is empty'
     got=$(entrypoint_args -e TUNNEL_HOSTNAME=dsh.example.org) || { echo 'cannot run the dsh entrypoint in its base image' >&2; return 1; }
-    hands 'TUNNEL_HOSTNAME set' "$want
+    hands 'TUNNEL_HOSTNAME set' "$plain
 --trusted-host
-dsh.example.org" "$got"
-    echo '   ...and the tunnel hostname as a second trusted authority when TUNNEL_HOSTNAME is set'
+dsh.example.org
+$quiet" "$got"
+    got=$(entrypoint_args -e TUNNEL_HOSTNAME=dsh.example.org:8443) || { echo 'cannot run the dsh entrypoint in its base image' >&2; return 1; }
+    hands 'TUNNEL_HOSTNAME with a port' "$plain
+--trusted-host
+dsh.example.org:8443
+$quiet" "$got"
+    echo '   ...and the tunnel hostname as a second trusted authority when TUNNEL_HOSTNAME is set, with or without a port'
+
+    # dsh refuses to start on an authority that is not a bare host or
+    # host:port, and caddy waits for a healthy dsh: a typo in the optional
+    # tunnel hostname must not take the private entrance down with it. Such a
+    # value is left out, and that is said on stderr.
+    for typo in 'https://dsh.example.org' 'dsh.example.org/path' 'dsh example.org' '-dsh.example.org'; do
+        got=$(entrypoint_args -e "TUNNEL_HOSTNAME=$typo") || { echo 'cannot run the dsh entrypoint in its base image' >&2; return 1; }
+        hands "TUNNEL_HOSTNAME '$typo'" "$plain
+exit=0
+stderr lines naming TUNNEL_HOSTNAME: 1" "$got"
+    done
+    echo '   ...and leaves it out, with a line on stderr, when TUNNEL_HOSTNAME is not a bare host name'
 }
 
 dockerfile() {

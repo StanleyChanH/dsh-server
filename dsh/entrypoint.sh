@@ -34,13 +34,26 @@ fi
 # compose.tunnel.yml) is a second authority dsh accepts. Its fence refuses
 # API requests whose Host it was not told about, and through the tunnel the
 # Host is that hostname.
+#
+# It has to be a bare host name, or host:port. dsh refuses to start on
+# anything else, and caddy waits for a healthy dsh, so a typo here (a URL
+# pasted in, say) would take the whole stack down, the private entrance
+# included. A value that is not a bare host name is therefore left out, and
+# that is said on stderr; the smoke test names it.
 set -- web --no-open \
   --host "$IP" \
   --port 3080 \
   --public-url "$DSH_PUBLIC_URL" \
   --trusted-host "$DSH_TRUSTED_HOST"
 if [ -n "${TUNNEL_HOSTNAME:-}" ]; then
-  set -- "$@" --trusted-host "$TUNNEL_HOSTNAME"
+  case "$TUNNEL_HOSTNAME" in
+    [!A-Za-z0-9]* | *[!A-Za-z0-9._:-]*)
+      echo "entrypoint: TUNNEL_HOSTNAME \"$TUNNEL_HOSTNAME\" is not a bare host name (letters, digits, dots, hyphens and underscores, optionally a port). dsh starts without this second authority; fix .env and run: docker compose up -d" >&2
+      ;;
+    *)
+      set -- "$@" --trusted-host "$TUNNEL_HOSTNAME"
+      ;;
+  esac
 fi
 
 exec dsh "$@"
